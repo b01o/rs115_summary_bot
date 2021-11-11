@@ -4,7 +4,9 @@ use anyhow::Result;
 use scopeguard::defer;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use teloxide::requests::HasPayload;
+use teloxide::types::Document;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile};
 use tokio::fs::{read_dir, File};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -174,36 +176,49 @@ async fn copied(bot: &AutoSend<Bot>, msg: &Message) -> Result<Message> {
     Ok(req.await?)
 }
 
+async fn download_file(bot: &AutoSend<Bot>, doc: &Document) -> Result<PathBuf> {
+    let Document {
+        file_name, file_id, ..
+    } = doc;
+
+    let default_name = "default_name".to_string();
+    let file_name = file_name.as_ref().unwrap_or(&default_name);
+
+    let teloxide::types::File { file_path, .. } = bot.get_file(file_id).send().await?;
+    let path_str = ROOT_FOLDER.to_owned() + file_id + "." + file_name;
+    let path = Path::new(&path_str);
+    if path.exists() {
+        return Ok(path.to_path_buf());
+    }
+    let mut new_file = File::create(path).await?;
+    bot.download_file(&file_path, &mut new_file).await?;
+
+    Ok(path.to_path_buf())
+}
+
 async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
     } = &cx;
-    let mut remove_cache = false;
     if let Some(doc) = msg.document() {
-        if let Some(doc_type) = &doc.mime_type {
-            let teloxide::types::File { file_path, .. } = bot.get_file(&doc.file_id).send().await?;
-            let path_str = ROOT_FOLDER.to_owned()
-                + doc.file_id.as_ref()
-                + "."
-                + doc.file_name.as_ref().unwrap();
-            let path = Path::new(&path_str);
-            let mut new_file = File::create(path).await?;
-            bot.download_file(&file_path, &mut new_file).await?;
-
-            defer! {
-                if !msg.chat.is_private() {
-                    let _ = fs::remove_file(path);
-                }
+        if let Some(size) = &doc.file_size {
+            if *size > 1024 * 1024 * 20 {
+                //ignore
+                return Ok(());
             }
+        }
 
+        if let Some(doc_type) = &doc.mime_type {
             if *doc_type == mime::TEXT_PLAIN {
-                let _ = copied(bot, msg).await;
+                let path = download_file(bot, doc).await?;
 
-                let summary = line_summary(path).map_err(|e| {
-                    let _ = fs::remove_file(path);
+                let summary = line_summary(&path).map_err(|e| {
+                    let _ = fs::remove_file(&path);
                     e
                 })?;
+
+                let _ = copied(bot, msg).await;
 
                 let mut request = cx.reply_to(summary.to_string());
 
@@ -213,28 +228,48 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
                     request =
                         request.reply_markup(btn("转成JSON", format!("{}{}", "2j", last_part)));
                 } else {
-                    remove_cache = true;
+                    let _ = fs::remove_file(&path);
                 }
                 request.await?;
             } else if *doc_type == mime::APPLICATION_JSON {
-                let _ = copied(bot, msg).await;
+                let path = download_file(bot, doc).await?;
 
-                let sha1 = path_str.parse()?;
-                let summary = json_summary(&sha1)?;
+                let sha1 = path
+                    .to_str()
+                    .ok_or_else(|| {
+                        let _ = fs::remove_file(&path);
+                        anyhow!("invalid path str")
+                    })?
+                    .parse()
+                    .map_err(|e| {
+                        let _ = fs::remove_file(&path);
+                        e
+                    })?;
+
+                let _ = copied(bot, msg).await;
+                let summary = json_summary(&sha1).map_err(|e| {
+                    let _ = fs::remove_file(&path);
+                    e
+                })?;
+
                 let mut request = cx.reply_to(summary.to_string());
                 if msg.chat.is_private() {
                     let len = doc.file_id.len();
                     let last_part: String = doc.file_id.chars().skip(len - 62).collect();
                     request =
                         request.reply_markup(btn("转成TXT", format!("{}{}", "2l", last_part)));
+                } else {
+                    let _ = fs::remove_file(&path);
                 }
                 request.await?;
-            }
+            } else if *doc_type == "application/x-bittorrent" {
+                let path = download_file(bot, doc).await?;
+                defer! { let _ = fs::remove_file(&path); }
 
-            defer! {
-                if remove_cache{
-                    let _ = fs::remove_file(path);
-                }
+                let mut request = cx.reply_to(format!("`{}`", get_torrent_magnet(&path)?));
+                let payload = request.payload_mut();
+                payload.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+                request.await?;
             }
         }
     }

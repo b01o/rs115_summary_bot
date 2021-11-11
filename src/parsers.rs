@@ -1,16 +1,27 @@
 use anyhow::{anyhow, Result};
+use anyhow::{bail, Context};
+use crypto::{digest::Digest, sha1::Sha1};
 use pakr_iec::iec;
 use serde::{Deserialize, Serialize};
+use serde_bencode::de;
+use serde_bytes::ByteBuf;
 use std::fmt;
-use std::fs::File;
+use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::str::FromStr;
 
 pub fn json2line(input: &Path, output: &Path) -> Result<()> {
-    assert!(input.exists() && (!output.exists()));
+    if !input.exists() {
+        bail!("input not found");
+    }
+
+    if output.exists() {
+        bail!("output path taken");
+    }
+
     let entity = input.to_str().unwrap().parse::<Sha1Entity>()?;
-    let file = File::create(output)?;
+    let file = fs::File::create(output)?;
     let mut writer = BufWriter::new(file);
     write_line(&mut writer, &entity, "".to_owned());
     Ok(())
@@ -23,10 +34,16 @@ pub fn json2line_mem(entity: &Sha1Entity) -> Result<String> {
 }
 
 pub fn line2json(input: &Path, output: &Path) -> Result<()> {
-    assert!(input.exists() && (!output.exists()));
+    if !input.exists() {
+        bail!("input not found");
+    }
+
+    if output.exists() {
+        bail!("output path taken");
+    }
 
     let mut root_list: Vec<Sha1Entity> = Vec::new();
-    let file = File::open(input).unwrap();
+    let file = fs::File::open(input).unwrap();
     let mut reader = BufReader::new(file);
     if has_bom(input) {
         reader.seek_relative(3).unwrap();
@@ -60,7 +77,7 @@ pub fn line2json(input: &Path, output: &Path) -> Result<()> {
     }
 
     // if list contains multiple entities, create a parent folder for them
-    let out_file = File::create(output)?;
+    let out_file = fs::File::create(output)?;
     let writer = BufWriter::new(out_file);
     if root_list.len() > 1 {
         let mut new_parent = Sha1Entity::new("new_folder".to_owned());
@@ -155,7 +172,7 @@ pub fn line_summary(path: &Path) -> Result<Summary> {
     let mut total_files: u64 = 0;
     let mut has_folder = true;
 
-    let file = File::open(path)?;
+    let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
@@ -258,7 +275,7 @@ impl FromStr for Sha1Entity {
         if !path.exists() {
             return Err(anyhow!("File not exist."));
         }
-        let file = File::open(s)?;
+        let file = fs::File::open(s)?;
         let mut reader = BufReader::new(file);
         if has_bom(path) {
             reader.seek_relative(3)?;
@@ -378,7 +395,7 @@ impl std::fmt::Display for Parse115SHA1Error {
 }
 
 fn has_bom(path: &Path) -> bool {
-    let file = File::open(path).unwrap();
+    let file = fs::File::open(path).unwrap();
     let reader = BufReader::new(file);
     let mut buffer = [0; 3];
     let mut content = reader.take(3);
@@ -413,7 +430,7 @@ fn write_line_mem(res: &mut String, entity: &Sha1Entity, suffix: String) {
     }
 }
 
-fn write_line(writer: &mut BufWriter<File>, entity: &Sha1Entity, suffix: String) {
+fn write_line(writer: &mut BufWriter<fs::File>, entity: &Sha1Entity, suffix: String) {
     let suffix = suffix + "|" + &entity.dir_name;
     for file in &entity.files {
         let link = file.to_sha1_link();
@@ -423,4 +440,82 @@ fn write_line(writer: &mut BufWriter<File>, entity: &Sha1Entity, suffix: String)
     for dir in &entity.dirs {
         write_line(writer, dir, suffix.to_owned());
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct Node(String, i64);
+
+#[derive(Debug, Deserialize, Serialize)]
+struct File {
+    path: Vec<String>,
+    length: i64,
+    #[serde(default)]
+    md5sum: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Info {
+    name: String,
+    pieces: ByteBuf,
+    #[serde(rename = "piece length")]
+    piece_length: i64,
+    #[serde(default)]
+    md5sum: Option<String>,
+    #[serde(default)]
+    length: Option<i64>,
+    #[serde(default)]
+    files: Option<Vec<File>>,
+    #[serde(default)]
+    private: Option<u8>,
+    #[serde(default)]
+    path: Option<Vec<String>>,
+    #[serde(default)]
+    #[serde(rename = "root hash")]
+    root_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Torrent {
+    pub info: Info,
+    #[serde(default, skip)]
+    announce: Option<String>,
+    #[serde(default, skip)]
+    nodes: Option<Vec<Node>>,
+    #[serde(default, skip)]
+    encoding: Option<String>,
+    #[serde(default, skip)]
+    httpseeds: Option<Vec<String>>,
+    #[serde(default, skip)]
+    #[serde(rename = "announce-list")]
+    announce_list: Option<Vec<Vec<String>>>,
+    #[serde(default, skip)]
+    #[serde(rename = "creation date")]
+    creation_date: Option<i64>,
+    #[serde(skip)]
+    #[serde(rename = "comment")]
+    comment: Option<String>,
+    #[serde(default, skip)]
+    #[serde(rename = "created by")]
+    created_by: Option<String>,
+}
+
+pub fn get_torrent_magnet(path: &Path) -> Result<String> {
+    let path = Path::new(path);
+    if !path.exists() {
+        bail!("file not found...");
+    }
+
+    let mut file = fs::File::open(path).context("fail to open file")?;
+    let metadata = file
+        .metadata()
+        .context(format!("fail to get metadata for {:?}", file))?;
+    let mut buf = vec![0; metadata.len() as usize];
+    file.read(&mut buf).context("fail to read file as bytes")?;
+    let torrent = de::from_bytes::<Torrent>(&buf).context("bencode deserialization failed.")?;
+    let bytes = serde_bencode::to_bytes(&torrent.info)?;
+    let mut hasher = Sha1::new();
+    hasher.input(&bytes);
+    let res = hasher.result_str();
+
+    Ok("magnet:?xt=urn:btih:".to_string() + &res)
 }
