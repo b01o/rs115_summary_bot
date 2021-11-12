@@ -2,12 +2,12 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Result;
 use scopeguard::defer;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use teloxide::requests::HasPayload;
 use teloxide::types::Document;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile};
+use tokio::fs::create_dir_all;
 use tokio::fs::{read_dir, File};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -15,14 +15,14 @@ use rs115_bot::parsers::*;
 use teloxide::net::Download;
 use teloxide::prelude::*;
 
-const ROOT_FOLDER: &str = "/tmp/tgtmp/";
+const ROOT_FOLDER: &str = ".cache/tgtmp/";
 static mut DEBUG_CC_ID: i64 = -1;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let path = Path::new(ROOT_FOLDER);
     if !path.exists() {
-        fs::create_dir_all(path)?;
+        create_dir_all(path).await?;
     }
 
     if let Some(id) = std::env::var_os("DEBUG_CC_ID") {
@@ -108,12 +108,14 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
 
                         let new_file = file.as_path();
 
+                        log::info!("transforming {}", new_file.to_string_lossy());
+
                         defer! {
                             if cache.exists(){
-                                let _ = fs::remove_file(&cache);
+                                let _ = std::fs::remove_file(&cache);
                             }
                             if new_file.exists(){
-                                let _ = fs::remove_file(&new_file);
+                                let _ = std::fs::remove_file(&new_file);
                             }
                         }
 
@@ -122,7 +124,7 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
                         }
 
                         if version.starts_with("2j") {
-                            line2json(&cache, new_file)?;
+                            line2json(&cache, new_file).await?;
                         } else if version.starts_with("2l") {
                             json2line(&cache, new_file)?;
                         }
@@ -147,7 +149,6 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
                     .await?;
             }
         }
-        log::info!("You chose: {}", version);
     }
 
     Ok(())
@@ -213,8 +214,8 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
             if *doc_type == mime::TEXT_PLAIN {
                 let path = download_file(bot, doc).await?;
 
-                let summary = line_summary(&path).map_err(|e| {
-                    let _ = fs::remove_file(&path);
+                let summary = line_summary(&path).await.map_err(|e| {
+                    let _ = std::fs::remove_file(&path);
                     e
                 })?;
 
@@ -228,7 +229,7 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
                     request =
                         request.reply_markup(btn("转成JSON", format!("{}{}", "2j", last_part)));
                 } else {
-                    let _ = fs::remove_file(&path);
+                    let _ = std::fs::remove_file(&path);
                 }
                 request.await?;
             } else if *doc_type == mime::APPLICATION_JSON {
@@ -237,18 +238,18 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
                 let sha1 = path
                     .to_str()
                     .ok_or_else(|| {
-                        let _ = fs::remove_file(&path);
+                        let _ = std::fs::remove_file(&path);
                         anyhow!("invalid path str")
                     })?
                     .parse()
                     .map_err(|e| {
-                        let _ = fs::remove_file(&path);
+                        let _ = std::fs::remove_file(&path);
                         e
                     })?;
 
                 let _ = copied(bot, msg).await;
                 let summary = json_summary(&sha1).map_err(|e| {
-                    let _ = fs::remove_file(&path);
+                    let _ = std::fs::remove_file(&path);
                     e
                 })?;
 
@@ -259,14 +260,15 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
                     request =
                         request.reply_markup(btn("转成TXT", format!("{}{}", "2l", last_part)));
                 } else {
-                    let _ = fs::remove_file(&path);
+                    let _ = std::fs::remove_file(&path);
                 }
                 request.await?;
             } else if *doc_type == "application/x-bittorrent" {
                 let path = download_file(bot, doc).await?;
-                defer! { let _ = fs::remove_file(&path); }
+                defer! { let _ = std::fs::remove_file(&path); }
 
-                let mut request = cx.reply_to(format!("`{}`", get_torrent_magnet(&path)?));
+                let mut request =
+                    cx.reply_to(format!("`{}`", get_torrent_magnet_async(&path).await?));
                 let payload = request.payload_mut();
                 payload.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
                 request.await?;
