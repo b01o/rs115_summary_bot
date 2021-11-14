@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_bencode::de;
 use serde_bytes::ByteBuf;
 use std::fmt;
-// use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 
 use std::io::SeekFrom;
 use std::path::Path;

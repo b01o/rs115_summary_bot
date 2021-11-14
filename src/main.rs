@@ -70,84 +70,82 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
         update: query,
     } = cx;
 
-    if let Some(version) = query.data {
+    if let (Some(version), Some(msg)) = (query.data, query.message) {
         let working = "请稍等...";
         let mut found_cache = false;
-        if let Some(msg) = query.message {
-            let to_send = format!("{}\n{}", msg.text().unwrap_or(""), working);
-            bot.edit_message_text(msg.chat.id, msg.id, &to_send).await?;
+        let to_send = format!("{}\n{}", msg.text().unwrap_or(""), working);
+        bot.edit_message_text(msg.chat.id, msg.id, &to_send).await?;
 
-            if version.starts_with("2j") || version.starts_with("2l") {
-                let root = Path::new(ROOT_FOLDER);
-                let mut paths = read_dir(root).await?;
+        if version.starts_with("2j") || version.starts_with("2l") {
+            let root = Path::new(ROOT_FOLDER);
+            let mut paths = read_dir(root).await?;
 
-                while let Some(dir) = paths.next_entry().await? {
-                    let filename = dir.file_name();
-                    let filename = filename.to_string_lossy();
-                    let arr: Vec<&str> = filename.splitn(2, '.').collect();
-                    if arr.len() != 2 {
-                        continue;
-                    }
-
-                    let file_id = arr[0];
-                    if file_id.ends_with(&version[2..]) {
-                        // found cache!
-                        found_cache = true;
-
-                        let mut file = dir.path();
-                        let cache = file.as_path().to_owned();
-                        file.pop();
-
-                        let mut new_filename = arr[1].rsplit_once('.').unwrap().0.to_string();
-                        if version.starts_with("2j") {
-                            new_filename += ".json";
-                        } else if version.starts_with("2l") {
-                            new_filename += ".txt";
-                        }
-                        file.push(new_filename);
-
-                        let new_file = file.as_path();
-
-                        log::info!("transforming {}", new_file.to_string_lossy());
-
-                        defer! {
-                            if cache.exists(){
-                                let _ = std::fs::remove_file(&cache);
-                            }
-                            if new_file.exists(){
-                                let _ = std::fs::remove_file(&new_file);
-                            }
-                        }
-
-                        if !cache.exists() || new_file.exists() {
-                            bail!("file problem");
-                        }
-
-                        if version.starts_with("2j") {
-                            line2json(&cache, new_file).await?;
-                        } else if version.starts_with("2l") {
-                            json2line(&cache, new_file)?;
-                        }
-
-                        let input_file = InputFile::File(new_file.to_path_buf());
-
-                        let mut req = bot.send_document(msg.chat_id(), input_file);
-                        let payload = req.payload_mut();
-                        payload.reply_to_message_id = Some(msg.id);
-                        req.await?;
-                    }
+            while let Some(dir) = paths.next_entry().await? {
+                let filename = dir.file_name();
+                let filename = filename.to_string_lossy();
+                let arr: Vec<&str> = filename.splitn(2, '.').collect();
+                if arr.len() != 2 {
+                    continue;
                 }
 
-                if !found_cache {
-                    let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
+                let file_id = arr[0];
+                if file_id.ends_with(&version[2..]) {
+                    // found cache!
+                    found_cache = true;
+
+                    let mut file = dir.path();
+                    let cache = file.as_path().to_owned();
+                    file.pop();
+
+                    let mut new_filename = arr[1].rsplit_once('.').unwrap().0.to_string();
+                    if version.starts_with("2j") {
+                        new_filename += ".json";
+                    } else if version.starts_with("2l") {
+                        new_filename += ".txt";
+                    }
+                    file.push(new_filename);
+
+                    let new_file = file.as_path();
+
+                    log::info!("transforming {}", new_file.to_string_lossy());
+
+                    defer! {
+                        if cache.exists(){
+                            let _ = std::fs::remove_file(&cache);
+                        }
+                        if new_file.exists(){
+                            let _ = std::fs::remove_file(&new_file);
+                        }
+                    }
+
+                    if !cache.exists() || new_file.exists() {
+                        bail!("file problem");
+                    }
+
+                    if version.starts_with("2j") {
+                        line2json(&cache, new_file).await?;
+                    } else if version.starts_with("2l") {
+                        json2line(&cache, new_file)?;
+                    }
+
+                    let input_file = InputFile::File(new_file.to_path_buf());
+
+                    let mut req = bot.send_document(msg.chat_id(), input_file);
                     let payload = req.payload_mut();
                     payload.reply_to_message_id = Some(msg.id);
                     req.await?;
                 }
-
-                bot.edit_message_text(msg.chat.id, msg.id, msg.text().unwrap_or(""))
-                    .await?;
             }
+
+            if !found_cache {
+                let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
+                let payload = req.payload_mut();
+                payload.reply_to_message_id = Some(msg.id);
+                req.await?;
+            }
+
+            bot.edit_message_text(msg.chat.id, msg.id, msg.text().unwrap_or(""))
+                .await?;
         }
     }
 
@@ -164,7 +162,12 @@ async fn copied(bot: &AutoSend<Bot>, msg: &Message) -> Result<Message> {
 
     let mut req = unsafe { bot.copy_message(DEBUG_CC_ID, msg.chat_id(), msg.id) };
 
-    let text_to_send = msg.text().unwrap_or("").to_string() + msg.caption().unwrap_or("");
+    let text_to_send = format!(
+        "{}{}",
+        msg.text().unwrap_or(""),
+        msg.caption().unwrap_or("")
+    );
+
     let pl = req.payload_mut();
     pl.caption = Some(format!(
         "{}\n{}:{} {},@{}",
@@ -202,6 +205,7 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
         requester: bot,
         update: msg,
     } = &cx;
+
     if let Some(doc) = msg.document() {
         if let Some(size) = &doc.file_size {
             if *size > 1024 * 1024 * 20 {
