@@ -165,7 +165,11 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
     let reader = tokio::io::BufReader::new(file);
     // dbg!(&reader);
     let mut lines = reader.lines();
-    while let Some(line) = lines.next_line().await.expect("Failed to read file") {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("fail to read line, maybe not utf8?")?
+    {
         num_lines += 1;
         let mut parts = line.split('|');
         let size: u64 = parts

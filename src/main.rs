@@ -225,7 +225,8 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
 
                 let _ = copied(bot, msg).await;
 
-                let mut request = cx.reply_to(summary.to_string());
+                let send_str = summary.to_string();
+                let mut request = cx.reply_to(send_str);
 
                 if msg.chat.is_private() && summary.has_folder {
                     let len = doc.file_id.len();
