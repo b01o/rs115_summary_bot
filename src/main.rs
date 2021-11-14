@@ -162,19 +162,27 @@ async fn copied(bot: &AutoSend<Bot>, msg: &Message) -> Result<Message> {
 
     let mut req = unsafe { bot.copy_message(DEBUG_CC_ID, msg.chat_id(), msg.id) };
 
-    let text_to_send = format!(
+    let mut text_to_send = format!(
         "{}{}",
         msg.text().unwrap_or(""),
         msg.caption().unwrap_or("")
     );
 
+    if let Some(user) = msg.from() {
+        text_to_send = format!(
+            "{}\n{}:{} @{}",
+            text_to_send,
+            user.id,
+            user.full_name(),
+            user.username.as_ref().unwrap_or(&"None".to_string())
+        );
+    }
+
     let pl = req.payload_mut();
     pl.caption = Some(format!(
-        "{}\n{}:{} {},@{}",
+        "{}\n{},@{}",
         text_to_send,
         &msg.chat.id,
-        &msg.chat.first_name().unwrap_or(""),
-        &msg.chat.last_name().unwrap_or(""),
         &msg.chat.username().unwrap_or(""),
     ));
     Ok(req.await?)
