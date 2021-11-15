@@ -164,6 +164,46 @@ async fn callback_to_json(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -
     Ok(found_cache)
 }
 
+async fn callback_line_strip_dir(
+    bot: &AutoSend<Bot>,
+    msg: &Message,
+    id_suffix: &str,
+) -> Result<bool> {
+    let mut found_cache = false;
+    if let Some(cache) = find_cache(id_suffix).await? {
+        found_cache = true;
+        let filename = &cache.name;
+        let mut new_file_path = cache.path.clone();
+        new_file_path.pop();
+        let new_filename: String;
+
+        if filename.ends_with(".txt") {
+            new_filename = filename.clone();
+        } else {
+            new_filename = filename.to_string() + ".txt";
+        }
+        new_file_path.push(new_filename);
+
+        defer! {
+            if cache.path.exists(){
+                let _ = std::fs::remove_file(&cache.path);
+            }
+            if new_file_path.exists(){
+                let _ = std::fs::remove_file(&new_file_path);
+            }
+        }
+
+        line_strip_dir_info(&cache.path, &new_file_path).await?;
+
+        let input_file = InputFile::File(new_file_path.to_path_buf());
+        let mut req = bot.send_document(msg.chat_id(), input_file);
+        let payload = req.payload_mut();
+        payload.reply_to_message_id = Some(msg.id);
+        req.await?;
+    }
+    Ok(found_cache)
+}
+
 async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
@@ -179,6 +219,7 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
         let found_cache = match &version[..2] {
             "2j" => callback_to_json(&bot, &msg, &version[2..]).await?,
             "2l" => callback_to_line(&bot, &msg, &version[2..]).await?,
+            "ls" => callback_line_strip_dir(&bot, &msg, &version[2..]).await?,
             _ => return Ok(()),
         };
 
@@ -283,8 +324,16 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
                 if msg.chat.is_private() && summary.has_folder {
                     let len = doc.file_id.len();
                     let last_part: String = doc.file_id.chars().skip(len - 62).collect();
-                    request =
-                        request.reply_markup(btn("转成JSON", format!("{}{}", "2j", last_part)));
+                    let btn1 = InlineKeyboardButton::callback(
+                        "转成JSON".to_string(),
+                        format!("{}{}", "2j", last_part),
+                    );
+                    let btn2 = InlineKeyboardButton::callback(
+                        "去掉目录信息".to_string(),
+                        format!("{}{}", "ls", last_part),
+                    );
+                    let btns = InlineKeyboardMarkup::default().append_row(vec![btn1, btn2]);
+                    request = request.reply_markup(btns);
                 } else {
                     let _ = std::fs::remove_file(&path);
                 }

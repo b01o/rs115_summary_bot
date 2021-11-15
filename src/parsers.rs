@@ -37,6 +37,64 @@ pub fn json2line_mem(entity: &Sha1Entity) -> Result<String> {
     Ok(res)
 }
 
+pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
+    if !input.exists() {
+        bail!("input not found");
+    }
+
+    if output.exists() {
+        bail!("output path taken");
+    }
+
+    let mut file = TokioFile::open(input)
+        .await
+        .context(format!("failed to open {}", input.to_string_lossy()))?;
+
+    if has_bom_async(input).await? {
+        file.seek(SeekFrom::Start(3)).await?;
+    }
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let out_file = TokioFile::create(output).await.context(format!(
+        "failed to create the output file:{}",
+        output.to_string_lossy(),
+    ))?;
+
+    let mut writer = BufWriter::new(out_file);
+
+    while let Some(line) = lines.next_line().await.context(format!(
+        "failed to read line from file: {}",
+        input.to_string_lossy()
+    ))? {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() <= 4 {
+            return Err(WrongSha1LinkFormat.into());
+        }
+        let name = parts[0]
+            .strip_prefix("115://")
+            .unwrap_or(parts[0])
+            .to_owned();
+
+        let size = parts[1].parse()?;
+        let sha1 = parts[2].to_owned();
+        let sha1_block = parts[3].to_owned();
+
+        let file = FileRepr {
+            name,
+            size,
+            sha1,
+            sha1_block,
+            id: None,
+        };
+        let line = file.to_sha1_link() + "\n";
+        writer.write_all(line.as_bytes()).await?;
+    }
+    writer.flush().await?;
+
+    Ok(())
+}
+
 pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
     if !input.exists() {
         bail!("input not found");
