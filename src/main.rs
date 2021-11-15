@@ -1,5 +1,4 @@
 use anyhow::anyhow;
-use anyhow::bail;
 use anyhow::Result;
 use scopeguard::defer;
 use std::path::Path;
@@ -64,6 +63,107 @@ fn btn(name: impl Into<String>, data: impl Into<String>) -> InlineKeyboardMarkup
     InlineKeyboardMarkup::default().append_row(vec![btn])
 }
 
+struct CacheFile {
+    name: String,
+    path: PathBuf,
+}
+
+async fn find_cache(id_suffix: &str) -> Result<Option<CacheFile>> {
+    let root = Path::new(ROOT_FOLDER);
+    let mut paths = read_dir(root).await?;
+
+    while let Some(dir) = paths.next_entry().await? {
+        let filename = dir.file_name();
+        let filename = filename.to_string_lossy();
+        let arr: Vec<&str> = filename.splitn(2, '.').collect();
+        if arr.len() != 2 {
+            continue;
+        }
+        let file_id = arr[0];
+        if file_id.ends_with(id_suffix) {
+            let path = dir.path();
+            let mut name = dir.file_name().to_string_lossy().to_string();
+            name = name
+                .splitn(2, '.')
+                .nth(1)
+                .unwrap_or("default_name")
+                .to_string();
+            return Ok(Some(CacheFile { name, path }));
+        }
+    }
+    Ok(None)
+}
+
+async fn callback_to_line(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -> Result<bool> {
+    let mut found_cache = false;
+    if let Some(cache) = find_cache(id_suffix).await? {
+        found_cache = true;
+        let filename = &cache.name;
+        let mut new_file_path = cache.path.clone();
+        new_file_path.pop();
+        let new_filename: String;
+        if filename.ends_with(".json") {
+            new_filename = filename[..filename.len() - 4].to_string() + ".txt";
+        } else {
+            new_filename = filename.to_string() + ".txt";
+        }
+        new_file_path.push(new_filename);
+
+        defer! {
+            if cache.path.exists(){
+                let _ = std::fs::remove_file(&cache.path);
+            }
+            if new_file_path.exists(){
+                let _ = std::fs::remove_file(&new_file_path);
+            }
+        }
+
+        json2line(&cache.path, &new_file_path)?;
+
+        let input_file = InputFile::File(new_file_path.to_path_buf());
+        let mut req = bot.send_document(msg.chat_id(), input_file);
+        let payload = req.payload_mut();
+        payload.reply_to_message_id = Some(msg.id);
+        req.await?;
+    }
+    Ok(found_cache)
+}
+
+async fn callback_to_json(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -> Result<bool> {
+    let mut found_cache = false;
+    if let Some(cache) = find_cache(id_suffix).await? {
+        found_cache = true;
+        let filename = &cache.name;
+        let mut new_file_path = cache.path.clone();
+        new_file_path.pop();
+        let new_filename: String;
+        if filename.ends_with(".txt") {
+            new_filename = filename[..filename.len() - 4].to_string() + ".json";
+        } else {
+            new_filename = filename.to_string() + ".json";
+        }
+        new_file_path.push(new_filename);
+
+        defer! {
+            if cache.path.exists(){
+                let _ = std::fs::remove_file(&cache.path);
+            }
+            if new_file_path.exists(){
+                let _ = std::fs::remove_file(&new_file_path);
+            }
+        }
+
+        line2json(&cache.path, &new_file_path).await?;
+
+        let input_file = InputFile::File(new_file_path.to_path_buf());
+        let mut req = bot.send_document(msg.chat_id(), input_file);
+        let payload = req.payload_mut();
+        payload.reply_to_message_id = Some(msg.id);
+        req.await?;
+    }
+    Ok(found_cache)
+}
+
 async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
@@ -72,81 +172,25 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
 
     if let (Some(version), Some(msg)) = (query.data, query.message) {
         let working = "请稍等...";
-        let mut found_cache = false;
+        // let mut found_cache = false;
         let to_send = format!("{}\n{}", msg.text().unwrap_or(""), working);
         bot.edit_message_text(msg.chat.id, msg.id, &to_send).await?;
 
-        if version.starts_with("2j") || version.starts_with("2l") {
-            let root = Path::new(ROOT_FOLDER);
-            let mut paths = read_dir(root).await?;
+        let found_cache = match &version[..2] {
+            "2j" => callback_to_json(&bot, &msg, &version[2..]).await?,
+            "2l" => callback_to_line(&bot, &msg, &version[2..]).await?,
+            _ => return Ok(()),
+        };
 
-            while let Some(dir) = paths.next_entry().await? {
-                let filename = dir.file_name();
-                let filename = filename.to_string_lossy();
-                let arr: Vec<&str> = filename.splitn(2, '.').collect();
-                if arr.len() != 2 {
-                    continue;
-                }
-
-                let file_id = arr[0];
-                if file_id.ends_with(&version[2..]) {
-                    // found cache!
-                    found_cache = true;
-
-                    let mut file = dir.path();
-                    let cache = file.as_path().to_owned();
-                    file.pop();
-
-                    let mut new_filename = arr[1].rsplit_once('.').unwrap().0.to_string();
-                    if version.starts_with("2j") {
-                        new_filename += ".json";
-                    } else if version.starts_with("2l") {
-                        new_filename += ".txt";
-                    }
-                    file.push(new_filename);
-
-                    let new_file = file.as_path();
-
-                    log::info!("transforming {}", new_file.to_string_lossy());
-
-                    defer! {
-                        if cache.exists(){
-                            let _ = std::fs::remove_file(&cache);
-                        }
-                        if new_file.exists(){
-                            let _ = std::fs::remove_file(&new_file);
-                        }
-                    }
-
-                    if !cache.exists() || new_file.exists() {
-                        bail!("file problem");
-                    }
-
-                    if version.starts_with("2j") {
-                        line2json(&cache, new_file).await?;
-                    } else if version.starts_with("2l") {
-                        json2line(&cache, new_file)?;
-                    }
-
-                    let input_file = InputFile::File(new_file.to_path_buf());
-
-                    let mut req = bot.send_document(msg.chat_id(), input_file);
-                    let payload = req.payload_mut();
-                    payload.reply_to_message_id = Some(msg.id);
-                    req.await?;
-                }
-            }
-
-            if !found_cache {
-                let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
-                let payload = req.payload_mut();
-                payload.reply_to_message_id = Some(msg.id);
-                req.await?;
-            }
-
-            bot.edit_message_text(msg.chat.id, msg.id, msg.text().unwrap_or(""))
-                .await?;
+        if !found_cache {
+            let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
+            let payload = req.payload_mut();
+            payload.reply_to_message_id = Some(msg.id);
+            req.await?;
         }
+
+        bot.edit_message_text(msg.chat.id, msg.id, msg.text().unwrap_or(""))
+            .await?;
     }
 
     Ok(())

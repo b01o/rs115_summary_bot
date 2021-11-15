@@ -53,7 +53,6 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
 
     if has_bom_async(input).await? {
         file.seek(SeekFrom::Start(3)).await?;
-    } else {
     }
 
     let reader = BufReader::new(file);
@@ -105,6 +104,7 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
         result = serde_json::to_vec(&root_list[0])?;
     }
     writer.write_all(&result).await?;
+    writer.flush().await?;
 
     Ok(())
 }
@@ -159,9 +159,6 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
     let mut has_folder = true;
 
     let file = TokioFile::open(path).await?;
-    // let meta = file.metadata().await?;
-    // dbg!(meta.len());
-
     let reader = tokio::io::BufReader::new(file);
     // dbg!(&reader);
     let mut lines = reader.lines();
