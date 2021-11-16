@@ -8,6 +8,7 @@ use teloxide::types::Document;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile};
 use tokio::fs::create_dir_all;
 use tokio::fs::{read_dir, File};
+use tokio::io::AsyncReadExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use rs115_bot::parsers::*;
@@ -118,7 +119,7 @@ async fn callback_to_line(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -
             }
         }
 
-        json2line(&cache.path, &new_file_path)?;
+        json2line(&cache.path, &new_file_path).await?;
 
         let input_file = InputFile::File(new_file_path.to_path_buf());
         let mut req = bot.send_document(msg.chat_id(), input_file);
@@ -341,17 +342,12 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
             } else if *doc_type == mime::APPLICATION_JSON {
                 let path = download_file(bot, doc).await?;
 
-                let sha1 = path
-                    .to_str()
-                    .ok_or_else(|| {
-                        let _ = std::fs::remove_file(&path);
-                        anyhow!("invalid path str")
-                    })?
-                    .parse()
-                    .map_err(|e| {
-                        let _ = std::fs::remove_file(&path);
-                        e
-                    })?;
+                let mut json_file = File::open(&path).await?;
+
+                let mut json: Vec<u8> = Vec::new();
+                json_file.read_to_end(&mut json).await?;
+
+                let sha1: Sha1Entity = serde_json::from_slice(&json)?;
 
                 let _ = copied(bot, msg).await;
                 let summary = json_summary(&sha1).map_err(|e| {

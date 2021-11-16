@@ -13,7 +13,7 @@ use std::str::FromStr;
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
-pub fn json2line(input: &Path, output: &Path) -> Result<()> {
+pub async fn json2line(input: &Path, output: &Path) -> Result<()> {
     if !input.exists() {
         bail!("input not found");
     }
@@ -22,11 +22,22 @@ pub fn json2line(input: &Path, output: &Path) -> Result<()> {
         bail!("output path taken");
     }
 
-    let entity = input.to_str().unwrap().parse::<Sha1Entity>()?;
+    let mut file = TokioFile::open(input)
+        .await
+        .context(format!("failed to open {}", input.to_string_lossy()))?;
+
+    if has_bom_async(input).await? {
+        file.seek(SeekFrom::Start(3)).await?;
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    file.read_to_end(&mut buf).await?;
+    file.flush().await?;
+
+    let entity: Sha1Entity = serde_json::from_slice(&buf)?;
 
     let file = std::fs::File::create(output)?;
     let mut writer = std::io::BufWriter::new(file);
-
     write_line(&mut writer, &entity, "".to_owned());
     Ok(())
 }
@@ -218,7 +229,6 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
 
     let file = TokioFile::open(path).await?;
     let reader = tokio::io::BufReader::new(file);
-    // dbg!(&reader);
     let mut lines = reader.lines();
     while let Some(line) = lines
         .next_line()
