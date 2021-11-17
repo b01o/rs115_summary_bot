@@ -21,4 +21,6 @@ mime = "0.3.16"
 pakr-iec = "1.0.1"
 scopeguard = "1.1.0"
 
+strum = { version = "0.22", features = ["derive"] }
 rust-crypto = "0.2"
+

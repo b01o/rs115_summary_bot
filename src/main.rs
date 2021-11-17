@@ -3,9 +3,15 @@ use anyhow::Result;
 use scopeguard::defer;
 use std::path::Path;
 use std::path::PathBuf;
+use strum::EnumIter;
+use strum::IntoEnumIterator;
 use teloxide::requests::HasPayload;
+use teloxide::types::BotCommandScope;
 use teloxide::types::Document;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile};
+use teloxide::utils::command::BotCommand;
+
+use teloxide::types::BotCommand as BC;
 use tokio::fs::create_dir_all;
 use tokio::fs::{read_dir, File};
 use tokio::io::AsyncReadExt;
@@ -17,6 +23,8 @@ use teloxide::prelude::*;
 
 const ROOT_FOLDER: &str = ".cache/tgtmp/";
 static mut DEBUG_CC_ID: i64 = -1;
+const HELP: &str = "向机器人发送 sha1 文件, 出现对应选项。\njson 文件需要以 .json 文件名后缀结尾，否则忽略。仅含有目录信息的 txt 才支持转换成 json 文件。\n目前仅支持20M内的文件。";
+const VERSION: &str = "2.0.2 Nov 17 2021 CST";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,7 +32,6 @@ async fn main() -> Result<()> {
     if !path.exists() {
         create_dir_all(path).await?;
     }
-
     if let Some(id) = std::env::var_os("DEBUG_CC_ID") {
         unsafe {
             DEBUG_CC_ID = id
@@ -33,14 +40,53 @@ async fn main() -> Result<()> {
                 .expect("DEBUG_CC_ID is invalid");
         }
     }
-
     let _ = run().await?;
+    Ok(())
+}
+
+#[derive(BotCommand, Debug, EnumIter)]
+#[command(rename = "lowercase", description = "These commands are supported:")]
+enum Command {
+    #[command(description = "Display this text")]
+    Help,
+    Version,
+}
+impl Command {
+    fn description(&self) -> String {
+        match self {
+            Command::Help => "打印帮助",
+            Command::Version => "版本信息",
+        }
+        .to_string()
+    }
+}
+
+impl std::fmt::Display for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = format!("{:?}", self);
+        write!(f, "{}", name.to_lowercase())
+    }
+}
+
+async fn set_up_commands(bot: &AutoSend<Bot>) -> Result<()> {
+    bot.delete_my_commands().await?;
+    let list: Vec<BC> = Command::iter()
+        .map(|command| BC::new(command.to_string(), command.description()))
+        .collect();
+
+    let mut smc = bot.set_my_commands(list);
+    let mut payload = smc.payload_mut();
+    payload.scope = Some(BotCommandScope::AllPrivateChats);
+    smc.await?;
+
     Ok(())
 }
 
 async fn run() -> Result<()> {
     teloxide::enable_logging!();
     let bot = Bot::from_env().auto_send();
+
+    set_up_commands(&bot).await?;
 
     Dispatcher::new(bot)
         .messages_handler(|rx: DispatcherHandlerRx<AutoSend<Bot>, Message>| {
@@ -300,6 +346,14 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
         update: msg,
     } = &cx;
 
+    if let Some(text) = msg.text() {
+        match BotCommand::parse(text, "") {
+            Ok(Command::Help) => help(&cx).await?,
+            Ok(Command::Version) => version(&cx).await?,
+            Err(_) => {}
+        }
+    }
+
     if let Some(doc) = msg.document() {
         if let Some(size) = &doc.file_size {
             if *size > 1024 * 1024 * 20 {
@@ -377,5 +431,17 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
             }
         }
     }
+    Ok(())
+}
+
+async fn version(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
+    cx.requester
+        .send_message(cx.update.chat_id(), VERSION)
+        .await?;
+    Ok(())
+}
+
+async fn help(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
+    cx.requester.send_message(cx.update.chat_id(), HELP).await?;
     Ok(())
 }
