@@ -106,6 +106,39 @@ pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+pub async fn is_valid_line(input: &Path) -> Result<()> {
+    if !input.exists() {
+        bail!("input not found");
+    }
+
+    let mut file = TokioFile::open(input)
+        .await
+        .context(format!("failed to open {}", input.to_string_lossy()))?;
+
+    if has_bom_async(input).await? {
+        file.seek(SeekFrom::Start(3)).await?;
+    }
+
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    if let Some(line) = lines.next_line().await.context(format!(
+        "failed to read line from file: {}",
+        input.to_string_lossy()
+    ))? {
+        if line.len() > 300 || line.starts_with('{') || line.starts_with('[') {
+            return Err(WrongSha1LinkFormat.into());
+        }
+
+        if line.split('|').count() <= 4 {
+            return Err(WrongSha1LinkFormat.into());
+        }
+        return Ok(());
+    }
+
+    Err(WrongSha1LinkFormat.into())
+}
+
 pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
     if !input.exists() {
         bail!("input not found");
@@ -178,6 +211,26 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+pub async fn path_to_sha1_entity(input: &Path) -> Result<Sha1Entity> {
+    if !input.exists() {
+        bail!("input not found");
+    }
+
+    let mut json_file = TokioFile::open(&input).await?;
+
+    if has_bom_async(input).await? {
+        json_file.seek(SeekFrom::Start(3)).await?;
+    }
+
+    let mut json: Vec<u8> = Vec::new();
+    json_file.read_to_end(&mut json).await?;
+    json_file.flush().await?;
+
+    let sha1: Sha1Entity = serde_json::from_slice(&json)?;
+
+    Ok(sha1)
+}
+
 pub fn line_summary_mem(content: &str) -> Result<Summary> {
     let mut all_size: Vec<u64> = Vec::new();
     let mut num_lines: u64 = 0;
@@ -235,6 +288,7 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
         .await
         .context("fail to read line, maybe not utf8?")?
     {
+        // if line.len() >
         num_lines += 1;
         let mut parts = line.split('|');
         let size: u64 = parts
@@ -472,7 +526,7 @@ fn has_bom(path: &Path) -> Result<bool> {
     Ok(num_reads < 3 || buffer == [0xef, 0xbb, 0xbf])
 }
 
-async fn has_bom_async(path: &Path) -> Result<bool> {
+pub async fn has_bom_async(path: &Path) -> Result<bool> {
     let file = TokioFile::open(path)
         .await
         .context(format!("failed to open {}", path.to_string_lossy()))?;
@@ -635,6 +689,7 @@ pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
     file.read_to_end(&mut buf).await?;
 
     let torrent = de::from_bytes::<Torrent>(&buf).context("bencode deserialization failed.")?;
+
     let bytes = serde_bencode::to_bytes(&torrent.info)?;
     let mut hasher = Sha1::new();
     hasher.input(&bytes);

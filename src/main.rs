@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use anyhow::Result;
+use rs115_bot::{callbacks::*, global::*};
 use scopeguard::defer;
 use std::path::Path;
 use std::path::PathBuf;
@@ -8,23 +9,17 @@ use strum::IntoEnumIterator;
 use teloxide::requests::HasPayload;
 use teloxide::types::BotCommandScope;
 use teloxide::types::Document;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 use teloxide::utils::command::BotCommand;
 
 use teloxide::types::BotCommand as BC;
 use tokio::fs::create_dir_all;
-use tokio::fs::{read_dir, File};
-use tokio::io::AsyncReadExt;
+use tokio::fs::File;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use rs115_bot::parsers::*;
 use teloxide::net::Download;
 use teloxide::prelude::*;
-
-const ROOT_FOLDER: &str = ".cache/tgtmp/";
-static mut DEBUG_CC_ID: i64 = -1;
-const HELP: &str = "向机器人发送 sha1 文件, 出现对应选项。\njson 文件需要以 .json 文件名后缀结尾，否则忽略。仅含有目录信息的 txt 才支持转换成 json 文件。\n目前仅支持20M内的文件。";
-const VERSION: &str = "2.0.2 Nov 17 2021 CST";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -108,147 +103,6 @@ async fn run() -> Result<()> {
 fn btn(name: impl Into<String>, data: impl Into<String>) -> InlineKeyboardMarkup {
     let btn = InlineKeyboardButton::callback(name.into(), data.into());
     InlineKeyboardMarkup::default().append_row(vec![btn])
-}
-
-struct CacheFile {
-    name: String,
-    path: PathBuf,
-}
-
-async fn find_cache(id_suffix: &str) -> Result<Option<CacheFile>> {
-    let root = Path::new(ROOT_FOLDER);
-    let mut paths = read_dir(root).await?;
-
-    while let Some(dir) = paths.next_entry().await? {
-        let filename = dir.file_name();
-        let filename = filename.to_string_lossy();
-        let arr: Vec<&str> = filename.splitn(2, '.').collect();
-        if arr.len() != 2 {
-            continue;
-        }
-        let file_id = arr[0];
-        if file_id.ends_with(id_suffix) {
-            let path = dir.path();
-            let mut name = dir.file_name().to_string_lossy().to_string();
-            name = name
-                .splitn(2, '.')
-                .nth(1)
-                .unwrap_or("default_name")
-                .to_string();
-            return Ok(Some(CacheFile { name, path }));
-        }
-    }
-    Ok(None)
-}
-
-async fn callback_to_line(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -> Result<bool> {
-    let mut found_cache = false;
-    if let Some(cache) = find_cache(id_suffix).await? {
-        found_cache = true;
-        let filename = &cache.name;
-        let mut new_file_path = cache.path.clone();
-        new_file_path.pop();
-        let new_filename: String;
-        if filename.ends_with(".json") {
-            new_filename = filename[..filename.len() - 4].to_string() + ".txt";
-        } else {
-            new_filename = filename.to_string() + ".txt";
-        }
-        new_file_path.push(new_filename);
-
-        defer! {
-            if cache.path.exists(){
-                let _ = std::fs::remove_file(&cache.path);
-            }
-            if new_file_path.exists(){
-                let _ = std::fs::remove_file(&new_file_path);
-            }
-        }
-
-        json2line(&cache.path, &new_file_path).await?;
-
-        let input_file = InputFile::File(new_file_path.to_path_buf());
-        let mut req = bot.send_document(msg.chat_id(), input_file);
-        let payload = req.payload_mut();
-        payload.reply_to_message_id = Some(msg.id);
-        req.await?;
-    }
-    Ok(found_cache)
-}
-
-async fn callback_to_json(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -> Result<bool> {
-    let mut found_cache = false;
-    if let Some(cache) = find_cache(id_suffix).await? {
-        found_cache = true;
-        let filename = &cache.name;
-        let mut new_file_path = cache.path.clone();
-        new_file_path.pop();
-        let new_filename: String;
-        if filename.ends_with(".txt") {
-            new_filename = filename[..filename.len() - 4].to_string() + ".json";
-        } else {
-            new_filename = filename.to_string() + ".json";
-        }
-        new_file_path.push(new_filename);
-
-        defer! {
-            if cache.path.exists(){
-                let _ = std::fs::remove_file(&cache.path);
-            }
-            if new_file_path.exists(){
-                let _ = std::fs::remove_file(&new_file_path);
-            }
-        }
-
-        line2json(&cache.path, &new_file_path).await?;
-
-        let input_file = InputFile::File(new_file_path.to_path_buf());
-        let mut req = bot.send_document(msg.chat_id(), input_file);
-        let payload = req.payload_mut();
-        payload.reply_to_message_id = Some(msg.id);
-        req.await?;
-    }
-    Ok(found_cache)
-}
-
-async fn callback_line_strip_dir(
-    bot: &AutoSend<Bot>,
-    msg: &Message,
-    id_suffix: &str,
-) -> Result<bool> {
-    let mut found_cache = false;
-    if let Some(cache) = find_cache(id_suffix).await? {
-        found_cache = true;
-        let filename = &cache.name;
-        let mut new_file_path = cache.path.clone();
-        new_file_path.pop();
-        let new_filename: String;
-
-        if filename.ends_with(".txt") {
-            new_filename = filename.clone();
-        } else {
-            new_filename = filename.to_string() + ".txt";
-        }
-        new_file_path.push(new_filename);
-
-        defer! {
-            if cache.path.exists(){
-                let _ = std::fs::remove_file(&cache.path);
-            }
-            if new_file_path.exists(){
-                let _ = std::fs::remove_file(&new_file_path);
-            }
-        }
-
-        line_strip_dir_info(&cache.path, &new_file_path).await?;
-
-        let input_file = InputFile::File(new_file_path.to_path_buf());
-        let mut req = bot.send_document(msg.chat_id(), input_file);
-        let payload = req.payload_mut();
-        payload.reply_to_message_id = Some(msg.id);
-        req.await?;
-    }
-    Ok(found_cache)
 }
 
 async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()> {
@@ -340,12 +194,80 @@ async fn download_file(bot: &AutoSend<Bot>, doc: &Document) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+async fn line_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document) -> Result<()> {
+    let UpdateWithCx {
+        requester: bot,
+        update: msg,
+    } = &cx;
+
+    let path = download_file(bot, doc).await?;
+
+    is_valid_line(&path).await?;
+    println!("valid line");
+
+    let summary = line_summary(&path).await.map_err(|e| {
+        let _ = std::fs::remove_file(&path);
+        e
+    })?;
+
+    let _ = copied(bot, msg).await;
+
+    let send_str = summary.to_string();
+    let mut request = cx.reply_to(send_str);
+
+    if msg.chat.is_private() && summary.has_folder {
+        let len = doc.file_id.len();
+        let last_part: String = doc.file_id.chars().skip(len - 62).collect();
+        let btn1 = InlineKeyboardButton::callback(
+            "转成JSON".to_string(),
+            format!("{}{}", "2j", last_part),
+        );
+        let btn2 = InlineKeyboardButton::callback(
+            "去掉目录信息".to_string(),
+            format!("{}{}", "ls", last_part),
+        );
+        let btns = InlineKeyboardMarkup::default().append_row(vec![btn1, btn2]);
+        request = request.reply_markup(btns);
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+    request.await?;
+    Ok(())
+}
+
+async fn json_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document) -> Result<()> {
+    let UpdateWithCx {
+        requester: bot,
+        update: msg,
+    } = &cx;
+
+    let path = download_file(bot, doc).await?;
+    let sha1: Sha1Entity = path_to_sha1_entity(&path).await?;
+    let _ = copied(bot, msg).await;
+    let summary = json_summary(&sha1).map_err(|e| {
+        let _ = std::fs::remove_file(&path);
+        e
+    })?;
+
+    let mut request = cx.reply_to(summary.to_string());
+    if msg.chat.is_private() {
+        let len = doc.file_id.len();
+        let last_part: String = doc.file_id.chars().skip(len - 62).collect();
+        request = request.reply_markup(btn("转成TXT", format!("{}{}", "2l", last_part)));
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+    request.await?;
+    Ok(())
+}
+
 async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
     } = &cx;
 
+    // handle command
     if let Some(text) = msg.text() {
         match BotCommand::parse(text, "") {
             Ok(Command::Help) => help(&cx).await?,
@@ -363,62 +285,24 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
         }
 
         if let Some(doc_type) = &doc.mime_type {
-            if *doc_type == mime::TEXT_PLAIN {
-                let path = download_file(bot, doc).await?;
-
-                let summary = line_summary(&path).await.map_err(|e| {
-                    let _ = std::fs::remove_file(&path);
-                    e
-                })?;
-
-                let _ = copied(bot, msg).await;
-
-                let send_str = summary.to_string();
-                let mut request = cx.reply_to(send_str);
-
-                if msg.chat.is_private() && summary.has_folder {
-                    let len = doc.file_id.len();
-                    let last_part: String = doc.file_id.chars().skip(len - 62).collect();
-                    let btn1 = InlineKeyboardButton::callback(
-                        "转成JSON".to_string(),
-                        format!("{}{}", "2j", last_part),
-                    );
-                    let btn2 = InlineKeyboardButton::callback(
-                        "去掉目录信息".to_string(),
-                        format!("{}{}", "ls", last_part),
-                    );
-                    let btns = InlineKeyboardMarkup::default().append_row(vec![btn1, btn2]);
-                    request = request.reply_markup(btns);
-                } else {
-                    let _ = std::fs::remove_file(&path);
-                }
-                request.await?;
-            } else if *doc_type == mime::APPLICATION_JSON {
-                let path = download_file(bot, doc).await?;
-
-                let mut json_file = File::open(&path).await?;
-
-                let mut json: Vec<u8> = Vec::new();
-                json_file.read_to_end(&mut json).await?;
-
-                let sha1: Sha1Entity = serde_json::from_slice(&json)?;
-
-                let _ = copied(bot, msg).await;
-                let summary = json_summary(&sha1).map_err(|e| {
-                    let _ = std::fs::remove_file(&path);
-                    e
-                })?;
-
-                let mut request = cx.reply_to(summary.to_string());
-                if msg.chat.is_private() {
-                    let len = doc.file_id.len();
-                    let last_part: String = doc.file_id.chars().skip(len - 62).collect();
-                    request =
-                        request.reply_markup(btn("转成TXT", format!("{}{}", "2l", last_part)));
-                } else {
-                    let _ = std::fs::remove_file(&path);
-                }
-                request.await?;
+            if *doc_type == mime::TEXT_PLAIN
+                || doc
+                    .file_name
+                    .as_ref()
+                    .unwrap_or(&"".to_string())
+                    .ends_with(".txt")
+            {
+                log::info!("getting a txt");
+                line_handler(&cx, doc).await?;
+            } else if *doc_type == mime::APPLICATION_JSON
+                || doc
+                    .file_name
+                    .as_ref()
+                    .unwrap_or(&"".to_string())
+                    .ends_with(".json")
+            {
+                log::info!("getting a json");
+                json_handler(&cx, doc).await?;
             } else if *doc_type == "application/x-bittorrent" {
                 let path = download_file(bot, doc).await?;
                 defer! { let _ = std::fs::remove_file(&path); }
