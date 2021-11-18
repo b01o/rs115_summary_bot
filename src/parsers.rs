@@ -130,7 +130,7 @@ pub async fn is_valid_line(input: &Path) -> Result<()> {
             return Err(WrongSha1LinkFormat.into());
         }
 
-        if line.split('|').count() <= 4 {
+        if line.split('|').count() < 4 {
             return Err(WrongSha1LinkFormat.into());
         }
         return Ok(());
@@ -165,7 +165,7 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
         input.to_string_lossy()
     ))? {
         let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() <= 4 {
+        if parts.len() < 4 {
             return Err(WrongSha1LinkFormat.into());
         }
         let name = parts[0].to_owned();

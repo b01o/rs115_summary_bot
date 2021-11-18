@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+
 use anyhow::Result;
 use rs115_bot::{callbacks::*, global::*};
 use scopeguard::defer;
@@ -260,6 +261,9 @@ async fn json_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document)
     request.await?;
     Ok(())
 }
+
+// fn link_check(text: &str){
+// }
 
 async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
     let UpdateWithCx {
