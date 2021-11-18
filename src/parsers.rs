@@ -232,9 +232,7 @@ pub async fn dedup_filerepr_file(input: &Path, output: &Path) -> Result<()> {
 
         if !set.contains(&repr.unique_key()) {
             set.insert(repr.unique_key());
-            writer
-                .write_all(format!("{}\n", repr.to_sha1_link()).as_bytes())
-                .await?;
+            writer.write_all(format!("{}\n", line).as_bytes()).await?;
         }
     }
 
