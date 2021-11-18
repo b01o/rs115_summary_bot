@@ -5,37 +5,22 @@ use pakr_iec::iec;
 use serde::{Deserialize, Serialize};
 use serde_bencode::de;
 use serde_bytes::ByteBuf;
+use std::collections::HashSet;
 use std::fmt;
 
-use std::io::SeekFrom;
 use std::path::Path;
 use std::str::FromStr;
 use tokio::fs::File as TokioFile;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 pub async fn json2line(input: &Path, output: &Path) -> Result<()> {
-    if !input.exists() {
-        bail!("input not found");
-    }
+    check_input_output(input, output).await?;
 
-    if output.exists() {
-        bail!("output path taken");
-    }
-
-    let mut file = TokioFile::open(input)
-        .await
-        .context(format!("failed to open {}", input.to_string_lossy()))?;
-
-    if has_bom_async(input).await? {
-        file.seek(SeekFrom::Start(3)).await?;
-    }
-
+    let mut file = open_without_bom(input).await?;
     let mut buf: Vec<u8> = Vec::new();
     file.read_to_end(&mut buf).await?;
     file.flush().await?;
-
     let entity: Sha1Entity = serde_json::from_slice(&buf)?;
-
     let file = std::fs::File::create(output)?;
     let mut writer = std::io::BufWriter::new(file);
     write_line(&mut writer, &entity, "".to_owned());
@@ -49,21 +34,9 @@ pub fn json2line_mem(entity: &Sha1Entity) -> Result<String> {
 }
 
 pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
-    if !input.exists() {
-        bail!("input not found");
-    }
+    check_input_output(input, output).await?;
 
-    if output.exists() {
-        bail!("output path taken");
-    }
-
-    let mut file = TokioFile::open(input)
-        .await
-        .context(format!("failed to open {}", input.to_string_lossy()))?;
-
-    if has_bom_async(input).await? {
-        file.seek(SeekFrom::Start(3)).await?;
-    }
+    let file = open_without_bom(input).await?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -78,27 +51,14 @@ pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
         "failed to read line from file: {}",
         input.to_string_lossy()
     ))? {
-        let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() <= 4 {
-            return Err(WrongSha1LinkFormat.into());
-        }
-        let name = parts[0]
-            .strip_prefix("115://")
-            .unwrap_or(parts[0])
-            .to_owned();
-
-        let size = parts[1].parse()?;
-        let sha1 = parts[2].to_owned();
-        let sha1_block = parts[3].to_owned();
-
-        let file = FileRepr {
-            name,
-            size,
-            sha1,
-            sha1_block,
-            id: None,
+        let repr = match FileRepr::from_str(&line) {
+            Ok(file) => file,
+            Err(_) => {
+                log::warn!("invalid line during stripping dir info: {}", line);
+                continue;
+            }
         };
-        let line = file.to_sha1_link() + "\n";
+        let line = repr.to_sha1_link() + "\n";
         writer.write_all(line.as_bytes()).await?;
     }
     writer.flush().await?;
@@ -107,18 +67,9 @@ pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
 }
 
 pub async fn is_valid_line(input: &Path) -> Result<()> {
-    if !input.exists() {
-        bail!("input not found");
-    }
+    check_input(input).await?;
 
-    let mut file = TokioFile::open(input)
-        .await
-        .context(format!("failed to open {}", input.to_string_lossy()))?;
-
-    if has_bom_async(input).await? {
-        file.seek(SeekFrom::Start(3)).await?;
-    }
-
+    let file = open_without_bom(input).await?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -140,22 +91,10 @@ pub async fn is_valid_line(input: &Path) -> Result<()> {
 }
 
 pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
-    if !input.exists() {
-        bail!("input not found");
-    }
-
-    if output.exists() {
-        bail!("output path taken");
-    }
+    check_input_output(input, output).await?;
 
     let mut root_list: Vec<Sha1Entity> = Vec::new();
-    let mut file = TokioFile::open(input)
-        .await
-        .context(format!("failed to open {}", input.to_string_lossy()))?;
-
-    if has_bom_async(input).await? {
-        file.seek(SeekFrom::Start(3)).await?;
-    }
+    let file = open_without_bom(input).await?;
 
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
@@ -165,28 +104,22 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
         input.to_string_lossy()
     ))? {
         let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() < 4 {
-            return Err(WrongSha1LinkFormat.into());
-        }
-        let name = parts[0].to_owned();
-        let size = parts[1].parse()?;
-        let sha1 = parts[2].to_owned();
-        let sha1_block = parts[3].to_owned();
 
-        let file = FileRepr {
-            name,
-            size,
-            sha1,
-            sha1_block,
-            id: None,
+        let repr = match FileRepr::from_str(&line) {
+            Ok(file) => file,
+            Err(_) => {
+                log::warn!("invalid line during stripping dir info: {}", line);
+                continue;
+            }
         };
+
         let mut curr_list: &mut Vec<_> = &mut root_list;
         for part in parts.iter().take(parts.len() - 1).skip(4) {
             let folder = get_dir_or_create(part, curr_list);
             curr_list = &mut folder.dirs;
         }
         let folder = get_dir_or_create(parts[parts.len() - 1], curr_list);
-        folder.files.push(file);
+        folder.files.push(repr);
     }
 
     // if list contains multiple entities, create a parent folder for them
@@ -212,15 +145,9 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
 }
 
 pub async fn path_to_sha1_entity(input: &Path) -> Result<Sha1Entity> {
-    if !input.exists() {
-        bail!("input not found");
-    }
+    check_input(input).await?;
 
-    let mut json_file = TokioFile::open(&input).await?;
-
-    if has_bom_async(input).await? {
-        json_file.seek(SeekFrom::Start(3)).await?;
-    }
+    let mut json_file = open_without_bom(input).await?;
 
     let mut json: Vec<u8> = Vec::new();
     json_file.read_to_end(&mut json).await?;
@@ -231,12 +158,114 @@ pub async fn path_to_sha1_entity(input: &Path) -> Result<Sha1Entity> {
     Ok(sha1)
 }
 
+pub async fn check_dup_n_err(path: &Path) -> Result<(usize, usize)> {
+    check_input(path).await?;
+    let file = open_without_bom(path).await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut invalid_lines: usize = 0;
+    let mut list: Vec<FileRepr> = Vec::new();
+
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("fail to read line, maybe not utf8?")?
+    {
+        if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
+
+        let repr = match FileRepr::from_str(&line) {
+            Ok(file) => file,
+            Err(_) => {
+                log::warn!("invalid line during check dup_n_err : {}", line);
+                invalid_lines += 1;
+                continue;
+            }
+        };
+
+        list.push(repr);
+    }
+
+    let origin = list.len();
+
+    if origin == 0 {
+        return Err(anyhow!(
+            "{:?}: file does not contain sha1 link, fail to find dup",
+            path
+        ));
+    }
+
+    let list = dedup_filerepr_vec(list);
+    let after = list.len();
+
+    Ok((origin - after, invalid_lines))
+}
+
+pub async fn dedup_filerepr_file(input: &Path, output: &Path) -> Result<()> {
+    check_input_output(input, output).await?;
+
+    let file = open_without_bom(input).await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut set = HashSet::new();
+
+    let output = TokioFile::create(output).await?;
+    let mut writer = BufWriter::new(output);
+
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("fail to read line, maybe not utf8?")?
+    {
+        if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
+
+        let repr = match FileRepr::from_str(&line) {
+            Ok(file) => file,
+            Err(_) => {
+                log::warn!("invalid line during dedup file {:?} info: {}", input, line,);
+                continue;
+            }
+        };
+
+        if !set.contains(&repr.unique_key()) {
+            set.insert(repr.unique_key());
+            writer
+                .write_all(format!("{}\n", repr.to_sha1_link()).as_bytes())
+                .await?;
+        }
+    }
+
+    writer.flush().await?;
+
+    Ok(())
+}
+
+pub fn dedup_filerepr_vec(mut list: Vec<FileRepr>) -> Vec<FileRepr> {
+    let mut set = HashSet::new();
+    list.retain(|item| {
+        if set.contains(&item.unique_key()) {
+            false
+        } else {
+            set.insert(item.unique_key());
+            true
+        }
+    });
+
+    list
+}
+
 pub fn line_summary_mem(content: &str) -> Result<Summary> {
     let mut all_size: Vec<u64> = Vec::new();
     let mut num_lines: u64 = 0;
     let mut has_folder = true;
 
     for line in content.lines() {
+        if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
         num_lines += 1;
         let mut parts = line.split('|');
         let size: u64 = parts
@@ -249,7 +278,7 @@ pub fn line_summary_mem(content: &str) -> Result<Summary> {
         }
     }
     if num_lines == 0 {
-        bail!("failed to read file");
+        bail!("empty lines!");
     }
 
     all_size.sort_unstable();
@@ -276,11 +305,13 @@ pub fn line_summary_mem(content: &str) -> Result<Summary> {
 }
 
 pub async fn line_summary(path: &Path) -> Result<Summary> {
+    check_input(path).await?;
+
     let mut all_size: Vec<u64> = Vec::new();
     let mut num_lines: u64 = 0;
     let mut has_folder = true;
 
-    let file = TokioFile::open(path).await?;
+    let file = open_without_bom(path).await?;
     let reader = tokio::io::BufReader::new(file);
     let mut lines = reader.lines();
     while let Some(line) = lines
@@ -288,7 +319,9 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
         .await
         .context("fail to read line, maybe not utf8?")?
     {
-        // if line.len() >
+        if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
         num_lines += 1;
         let mut parts = line.split('|');
         let size: u64 = parts
@@ -344,17 +377,16 @@ pub struct Summary {
     pub has_folder: bool,
 }
 
-fn to_iec(num: impl Into<u128>) -> String {
+pub fn to_iec(num: impl Into<u128>) -> String {
     let mut res = iec(num.into());
-
     if res.ends_with('i') {
         res.pop();
     } else {
         res.push('B')
     }
-
     res
 }
+
 impl std::fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -414,6 +446,41 @@ pub struct FileRepr {
     id: Option<u64>,
 }
 
+impl FromStr for FileRepr {
+    type Err = WrongSha1LinkFormat;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('|');
+        let mut name = parts.next().ok_or(WrongSha1LinkFormat)?.to_string();
+        if name.starts_with("115://") {
+            name = name.strip_prefix("115://").unwrap().to_string();
+        }
+        let size = parts
+            .next()
+            .ok_or(WrongSha1LinkFormat)?
+            .parse()
+            .map_err(|_| WrongSha1LinkFormat)?;
+
+        let sha1 = parts.next().ok_or(WrongSha1LinkFormat)?.to_string();
+        let sha1_block = parts.next().ok_or(WrongSha1LinkFormat)?.to_string();
+
+        if sha1.len() != 40 || sha1_block.len() != 40 {
+            return Err(WrongSha1LinkFormat);
+        }
+        if !(sha1.chars().all(|c| c.is_digit(16)) && sha1_block.chars().all(|c| c.is_digit(16))) {
+            return Err(WrongSha1LinkFormat);
+        }
+
+        Ok(FileRepr {
+            name,
+            size,
+            sha1,
+            sha1_block,
+            id: None,
+        })
+    }
+}
+
 impl FileRepr {
     fn to_sha1_link(&self) -> String {
         "115://".to_owned()
@@ -424,6 +491,10 @@ impl FileRepr {
                 self.sha1_block.to_owned(),
             ]
             .join("|")
+    }
+
+    fn unique_key(&self) -> String {
+        format!("{}{}{}", self.size, self.sha1, self.sha1_block)
     }
 }
 
@@ -447,7 +518,7 @@ impl Serialize for FileRepr {
 }
 
 #[derive(Debug)]
-struct WrongSha1LinkFormat;
+pub struct WrongSha1LinkFormat;
 
 impl std::fmt::Display for WrongSha1LinkFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -458,6 +529,8 @@ impl std::fmt::Display for WrongSha1LinkFormat {
 impl std::error::Error for WrongSha1LinkFormat {}
 
 use serde::de::Error;
+
+use crate::io::{check_input, check_input_output, has_bom, open_without_bom};
 impl<'de> Deserialize<'de> for FileRepr {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -513,31 +586,6 @@ impl std::fmt::Display for Parse115SHA1Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "invalid file")
     }
-}
-
-fn has_bom(path: &Path) -> Result<bool> {
-    let file =
-        std::fs::File::open(path).context(format!("failed to open {}", path.to_string_lossy()))?;
-    let reader = std::io::BufReader::new(file);
-    let mut buffer = [0; 3];
-    let mut content = std::io::Read::take(reader, 3);
-    let num_reads =
-        std::io::Read::read(&mut content, &mut buffer).context("fail to read bytes from file")?;
-    Ok(num_reads < 3 || buffer == [0xef, 0xbb, 0xbf])
-}
-
-pub async fn has_bom_async(path: &Path) -> Result<bool> {
-    let file = TokioFile::open(path)
-        .await
-        .context(format!("failed to open {}", path.to_string_lossy()))?;
-    let reader = BufReader::new(file);
-    let mut buffer = [0; 3];
-    let mut content = reader.take(3);
-    let num_reads = content
-        .read(&mut buffer)
-        .await
-        .context("fail to read bytes from file")?;
-    Ok(num_reads < 3 || buffer == [0xef, 0xbb, 0xbf])
 }
 
 fn get_dir_or_create<'q>(name: &'_ str, queue: &'q mut Vec<Sha1Entity>) -> &'q mut Sha1Entity {

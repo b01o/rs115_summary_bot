@@ -1,6 +1,7 @@
 use anyhow::anyhow;
-
 use anyhow::Result;
+use lazy_static::lazy_static;
+use regex::Regex;
 use rs115_bot::{callbacks::*, global::*};
 use scopeguard::defer;
 use std::path::Path;
@@ -101,29 +102,40 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn btn(name: impl Into<String>, data: impl Into<String>) -> InlineKeyboardMarkup {
-    let btn = InlineKeyboardButton::callback(name.into(), data.into());
-    InlineKeyboardMarkup::default().append_row(vec![btn])
+fn btn(
+    name: impl Into<String>,
+    code: impl Into<String>,
+    data: impl Into<String>,
+) -> InlineKeyboardButton {
+    InlineKeyboardButton::callback(name.into(), format!("{}{}", code.into(), data.into()))
 }
 
 async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: query,
-    } = cx;
+    } = &cx;
+    // let mut text_to_append = String::new();
 
-    if let (Some(version), Some(msg)) = (query.data, query.message) {
+    if let (Some(version), Some(msg)) = (&query.data, &query.message) {
         let working = "请稍等...";
-        // let mut found_cache = false;
         let to_send = format!("{}\n{}", msg.text().unwrap_or(""), working);
         bot.edit_message_text(msg.chat.id, msg.id, &to_send).await?;
 
         let found_cache = match &version[..2] {
-            "2j" => callback_to_json(&bot, &msg, &version[2..]).await?,
-            "2l" => callback_to_line(&bot, &msg, &version[2..]).await?,
-            "ls" => callback_line_strip_dir(&bot, &msg, &version[2..]).await?,
-            _ => return Ok(()),
+            "2j" => callback_to_json(bot, msg, &version[2..]).await?,
+            "2l" => callback_to_line(bot, msg, &version[2..]).await?,
+            "ls" => callback_line_strip_dir(bot, msg, &version[2..]).await?,
+            "ld" => callback_to_dedup(bot, msg, &version[2..]).await?,
+            _ => {
+                bot.answer_callback_query(&query.id).await?;
+                let text = msg.text().unwrap_or("").to_owned() + "\n发生了错误..";
+                bot.edit_message_text(msg.chat.id, msg.id, text).await?;
+                return Ok(());
+            }
         };
+
+        bot.answer_callback_query(&query.id).await?;
 
         if !found_cache {
             let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
@@ -132,8 +144,8 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
             req.await?;
         }
 
-        bot.edit_message_text(msg.chat.id, msg.id, msg.text().unwrap_or(""))
-            .await?;
+        let text = msg.text().unwrap_or("");
+        bot.edit_message_text(msg.chat.id, msg.id, text).await?;
     }
 
     Ok(())
@@ -203,8 +215,9 @@ async fn line_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document)
 
     let path = download_file(bot, doc).await?;
 
+    let mut cached = false;
+
     is_valid_line(&path).await?;
-    println!("valid line");
 
     let summary = line_summary(&path).await.map_err(|e| {
         let _ = std::fs::remove_file(&path);
@@ -213,25 +226,49 @@ async fn line_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document)
 
     let _ = copied(bot, msg).await;
 
-    let send_str = summary.to_string();
-    let mut request = cx.reply_to(send_str);
+    let mut send_str = summary.to_string();
+    let mut request = cx.reply_to(&send_str);
 
-    if msg.chat.is_private() && summary.has_folder {
+    if msg.chat.is_private() {
+        let (dup_num, invalid_num) = check_dup_n_err(&path).await?;
+        if dup_num == 0 {
+            send_str = format!("{}\n恭喜，这个文件没有重复文件链接。", &send_str);
+        } else {
+            send_str = format!("{}\n! 检测到重复文件 {} 个。", &send_str, dup_num);
+        }
+
+        if invalid_num != 0 {
+            send_str = format!(
+                "{}\n! 包含 {} 个格式不正确的错误链接",
+                &send_str, invalid_num
+            );
+        }
+
+        request = cx.reply_to(&send_str);
+
+        let mut btns = InlineKeyboardMarkup::default();
         let len = doc.file_id.len();
         let last_part: String = doc.file_id.chars().skip(len - 62).collect();
-        let btn1 = InlineKeyboardButton::callback(
-            "转成JSON".to_string(),
-            format!("{}{}", "2j", last_part),
-        );
-        let btn2 = InlineKeyboardButton::callback(
-            "去掉目录信息".to_string(),
-            format!("{}{}", "ls", last_part),
-        );
-        let btns = InlineKeyboardMarkup::default().append_row(vec![btn1, btn2]);
+
+        if summary.has_folder {
+            cached = true;
+            let btn1 = btn("转成JSON", "2j", &last_part);
+            let btn2 = btn("去掉目录信息", "ls", &last_part);
+            btns = btns.append_row(vec![btn1, btn2]);
+        }
+
+        let btn3 = btn("去除重复/无效文件", "ld", &last_part);
+        if dup_num != 0 {
+            btns = btns.append_row(vec![btn3]);
+            cached = true;
+        }
         request = request.reply_markup(btns);
-    } else {
+    }
+
+    if !cached {
         let _ = std::fs::remove_file(&path);
     }
+
     request.await?;
     Ok(())
 }
@@ -254,7 +291,9 @@ async fn json_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document)
     if msg.chat.is_private() {
         let len = doc.file_id.len();
         let last_part: String = doc.file_id.chars().skip(len - 62).collect();
-        request = request.reply_markup(btn("转成TXT", format!("{}{}", "2l", last_part)));
+        let btns =
+            InlineKeyboardMarkup::default().append_row(vec![btn("转成TXT", "2l", last_part)]);
+        request = request.reply_markup(btns);
     } else {
         let _ = std::fs::remove_file(&path);
     }
@@ -262,8 +301,34 @@ async fn json_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document)
     Ok(())
 }
 
-// fn link_check(text: &str){
-// }
+async fn link_check(cx: &UpdateWithCx<AutoSend<Bot>, Message>, text: &str) -> Result<()> {
+    lazy_static! {
+        static ref SHA1RE: Regex =
+            Regex::new(r"115://(.*?)\|(\d*?)(?:\|[a-fA-F0-9]{40}){2}").unwrap();
+    }
+
+    let mut response: String = Default::default();
+    let mut counter = 0;
+    let mut sum: u128 = 0;
+    for cap in SHA1RE.captures_iter(text) {
+        counter += 1;
+        let size: u128 = cap[2].parse()?;
+        sum += size;
+        response.push_str(&format!("{} => {}\n", to_iec(size), &cap[1]));
+    }
+
+    match counter {
+        2.. => response.push_str(&format!("共 {} 个文件, 总计: {}", counter, to_iec(sum))),
+        1 => response = format!("文件大小: {}", to_iec(sum)),
+        _ => {}
+    }
+
+    if !response.is_empty() {
+        cx.reply_to(response).await?;
+    }
+
+    Ok(())
+}
 
 async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
     let UpdateWithCx {
@@ -278,6 +343,8 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
             Ok(Command::Version) => version(&cx).await?,
             Err(_) => {}
         }
+
+        link_check(&cx, text).await?;
     }
 
     if let Some(doc) = msg.document() {
