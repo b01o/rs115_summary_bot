@@ -6,11 +6,9 @@ use anyhow::Result;
 use scopeguard::defer;
 use std::path::{Path, PathBuf};
 use teloxide::{
-    adaptors::AutoSend,
     prelude::Requester,
     requests::HasPayload,
     types::{InputFile, Message},
-    Bot,
 };
 use tokio::fs::read_dir;
 
@@ -45,11 +43,7 @@ async fn find_cache(id_suffix: &str) -> Result<Option<CacheFile>> {
     Ok(None)
 }
 
-pub async fn callback_to_dedup(
-    bot: &AutoSend<Bot>,
-    msg: &Message,
-    id_suffix: &str,
-) -> Result<bool> {
+pub async fn callback_to_dedup(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -85,7 +79,7 @@ pub async fn callback_to_dedup(
     Ok(found_cache)
 }
 
-pub async fn callback_to_line(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -> Result<bool> {
+pub async fn callback_to_line(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -120,7 +114,7 @@ pub async fn callback_to_line(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &st
     Ok(found_cache)
 }
 
-pub async fn callback_to_json(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &str) -> Result<bool> {
+pub async fn callback_to_json(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -155,11 +149,7 @@ pub async fn callback_to_json(bot: &AutoSend<Bot>, msg: &Message, id_suffix: &st
     Ok(found_cache)
 }
 
-pub async fn callback_line_strip_dir(
-    bot: &AutoSend<Bot>,
-    msg: &Message,
-    id_suffix: &str,
-) -> Result<bool> {
+pub async fn callback_line_strip_dir(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;

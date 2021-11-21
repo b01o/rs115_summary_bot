@@ -8,10 +8,14 @@ use rs115_bot::{callbacks::*, global::*};
 use scopeguard::defer;
 use std::path::Path;
 use strum::IntoEnumIterator;
-use teloxide::prelude::*;
+use teloxide::adaptors::throttle::Limits;
+use teloxide::error_handlers::OnError;
+use teloxide::prelude::{
+    Dispatcher, DispatcherHandlerRx, Requester, RequesterExt, StreamExt, UpdateWithCx,
+};
 use teloxide::requests::HasPayload;
-use teloxide::types::BotCommand as BC;
-use teloxide::types::BotCommandScope;
+use teloxide::types::{BotCommand as BC, Message};
+use teloxide::types::{BotCommandScope, CallbackQuery};
 use teloxide::utils::command::BotCommand;
 use tokio::fs::create_dir_all;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -34,7 +38,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-pub async fn set_up_commands(bot: &AutoSend<Bot>) -> Result<()> {
+pub async fn set_up_commands(bot: &Bot) -> Result<()> {
     bot.delete_my_commands().await?;
     let list: Vec<BC> = Command::iter()
         .map(|command| BC::new(command.to_string(), command.description()))
@@ -49,17 +53,19 @@ pub async fn set_up_commands(bot: &AutoSend<Bot>) -> Result<()> {
 
 async fn run() -> Result<()> {
     teloxide::enable_logging!();
-    let bot = Bot::from_env().auto_send();
+    let bot = teloxide::Bot::from_env()
+        .throttle(Limits::default())
+        .auto_send();
 
     set_up_commands(&bot).await?;
 
     Dispatcher::new(bot)
-        .messages_handler(|rx: DispatcherHandlerRx<AutoSend<Bot>, Message>| {
+        .messages_handler(|rx: DispatcherHandlerRx<Bot, Message>| {
             UnboundedReceiverStream::new(rx).for_each_concurrent(10, |cx| async move {
                 message_handler(cx).await.log_on_error().await;
             })
         })
-        .callback_queries_handler(|rx: DispatcherHandlerRx<AutoSend<Bot>, CallbackQuery>| {
+        .callback_queries_handler(|rx: DispatcherHandlerRx<Bot, CallbackQuery>| {
             UnboundedReceiverStream::new(rx).for_each_concurrent(10, |cx| async move {
                 callback_handler(cx).await.log_on_error().await;
             })
@@ -70,11 +76,12 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()> {
+async fn callback_handler(cx: UpdateWithCx<Bot, CallbackQuery>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: query,
     } = &cx;
+    // let bot = bot.requester;
 
     if let (Some(version), Some(msg)) = (&query.data, &query.message) {
         let working = "请稍等...";
@@ -110,7 +117,7 @@ async fn callback_handler(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Res
     Ok(())
 }
 
-async fn link_check(cx: &UpdateWithCx<AutoSend<Bot>, Message>, text: &str) -> Result<()> {
+async fn link_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
     lazy_static! {
         static ref SHA1RE: Regex =
             Regex::new(r"115://(.*?)\|(\d*?)(?:\|[a-fA-F0-9]{40}){2}").unwrap();
@@ -139,7 +146,7 @@ async fn link_check(cx: &UpdateWithCx<AutoSend<Bot>, Message>, text: &str) -> Re
     Ok(())
 }
 
-async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
+async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
@@ -156,7 +163,12 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
         link_check(&cx, text).await?;
     }
 
+    if let Some(caption) = msg.caption() {
+        link_check(&cx, caption).await?;
+    }
+
     if let Some(doc) = msg.document() {
+        // log::info!("getting doc");
         if let Some(size) = &doc.file_size {
             if *size > 1024 * 1024 * 20 {
                 //ignore
@@ -197,14 +209,14 @@ async fn message_handler(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()>
     }
     Ok(())
 }
-async fn version(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
+async fn version(cx: &UpdateWithCx<Bot, Message>) -> Result<()> {
     cx.requester
         .send_message(cx.update.chat_id(), VERSION)
         .await?;
     Ok(())
 }
 
-async fn help(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
+async fn help(cx: &UpdateWithCx<Bot, Message>) -> Result<()> {
     cx.requester.send_message(cx.update.chat_id(), HELP).await?;
     Ok(())
 }

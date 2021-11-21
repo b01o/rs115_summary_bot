@@ -1,3 +1,6 @@
+use teloxide::adaptors::{AutoSend, Throttle};
+pub type Bot = AutoSend<Throttle<teloxide::Bot>>;
+
 pub const ROOT_FOLDER: &str = ".cache/tgtmp/";
 pub static mut DEBUG_CC_ID: i64 = -1;
 pub const HELP: &str = r"使用方法: 向机器人发送 sha1 文件, 出现对应选项。

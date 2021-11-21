@@ -1,5 +1,5 @@
 use crate::{
-    global::{DEBUG_CC_ID, ROOT_FOLDER},
+    global::{Bot, DEBUG_CC_ID, ROOT_FOLDER},
     parsers::{
         check_dup_n_err, is_valid_line, json_summary, line_summary, path_to_sha1_entity, Sha1Entity,
     },
@@ -7,13 +7,11 @@ use crate::{
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use teloxide::{
-    adaptors::AutoSend,
     net::Download,
     payloads::SendMessageSetters,
     prelude::{Request, Requester, UpdateWithCx},
     requests::HasPayload,
     types::{Document, InlineKeyboardButton, InlineKeyboardMarkup, Message},
-    Bot,
 };
 use tokio::fs::File;
 
@@ -26,7 +24,7 @@ fn btn(
 }
 
 // save file for debugging
-pub async fn copied(bot: &AutoSend<Bot>, msg: &Message) -> Result<Message> {
+pub async fn copied(bot: &Bot, msg: &Message) -> Result<Message> {
     unsafe {
         if DEBUG_CC_ID == -1 || DEBUG_CC_ID == msg.chat_id() {
             return Err(anyhow!("ignore"));
@@ -61,7 +59,7 @@ pub async fn copied(bot: &AutoSend<Bot>, msg: &Message) -> Result<Message> {
     Ok(req.await?)
 }
 
-pub async fn download_file(bot: &AutoSend<Bot>, doc: &Document) -> Result<PathBuf> {
+pub async fn download_file(bot: &Bot, doc: &Document) -> Result<PathBuf> {
     let Document {
         file_name, file_id, ..
     } = doc;
@@ -81,7 +79,7 @@ pub async fn download_file(bot: &AutoSend<Bot>, doc: &Document) -> Result<PathBu
     Ok(path.to_path_buf())
 }
 
-pub async fn line_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document) -> Result<()> {
+pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
@@ -146,7 +144,7 @@ pub async fn line_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Docum
     Ok(())
 }
 
-pub async fn json_handler(cx: &UpdateWithCx<AutoSend<Bot>, Message>, doc: &Document) -> Result<()> {
+pub async fn json_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
