@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Result};
 use anyhow::{bail, Context};
+use crypto::md5::Md5;
 use crypto::{digest::Digest, sha1::Sha1};
+use magnet_url::Magnet;
 use pakr_iec::iec;
 use serde::{Deserialize, Serialize};
-use serde_bencode::de;
 use serde_bytes::ByteBuf;
 use std::collections::HashSet;
 use std::fmt;
 
 use std::path::Path;
+use std::process::Command;
 use std::str::FromStr;
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -676,7 +678,7 @@ pub struct Info {
     root_hash: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Torrent {
     pub info: Info,
     #[serde(default, skip)]
@@ -701,45 +703,46 @@ pub struct Torrent {
     created_by: Option<String>,
 }
 
-pub fn get_torrent_magnet(path: &Path) -> Result<String> {
-    let path = Path::new(path);
-    if !path.exists() {
-        bail!("file not found...");
-    }
-
-    let mut file = std::fs::File::open(path).context("fail to open file")?;
-    let metadata = file
-        .metadata()
-        .context(format!("fail to get metadata for {:?}", file))?;
-    let mut buf = vec![0; metadata.len() as usize];
-    std::io::Read::read(&mut file, &mut buf).context("fail to read file as bytes")?;
-
-    let torrent = de::from_bytes::<Torrent>(&buf).context("bencode deserialization failed.")?;
-    let bytes = serde_bencode::to_bytes(&torrent.info)?;
+#[allow(dead_code)]
+fn sha1(bytes: &[u8]) -> String {
     let mut hasher = Sha1::new();
-    hasher.input(&bytes);
-    let res = hasher.result_str();
+    hasher.input(bytes);
+    hasher.result_str()
+}
 
-    Ok("magnet:?xt=urn:btih:".to_string() + &res)
+#[allow(dead_code)]
+fn md5(bytes: &[u8]) -> String {
+    let mut hasher = Md5::new();
+    hasher.input(bytes);
+    hasher.result_str()
+}
+
+#[allow(dead_code)]
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
-    let path = Path::new(path);
-    if !path.exists() {
-        bail!("file not found...");
+    check_input(path).await?;
+
+    // let mut file = TokioFile::open(path).await.context("fail to open file")?;
+    // let mut buf = Vec::new();
+    // file.read_to_end(&mut buf).await?;
+
+    let output = Command::new("transmission-show")
+        .arg("-m")
+        .arg(path.as_os_str())
+        .output()
+        .context("transmission-show lanuch failed")?;
+
+    if !output.status.success() {
+        bail!("transsmission return err");
     }
 
-    let mut file = TokioFile::open(path).await.context("fail to open file")?;
-    let mut buf = Vec::new();
-
-    file.read_to_end(&mut buf).await?;
-
-    let torrent = de::from_bytes::<Torrent>(&buf).context("bencode deserialization failed.")?;
-
-    let bytes = serde_bencode::to_bytes(&torrent.info)?;
-    let mut hasher = Sha1::new();
-    hasher.input(&bytes);
-    let res = hasher.result_str();
-
-    Ok("magnet:?xt=urn:btih:".to_string() + &res)
+    let magnet = Magnet::new(std::str::from_utf8(&output.stdout)?)
+        .map_err(|_| anyhow!("magnet parse fail"))?;
+    let xt = magnet.xt.ok_or_else(|| anyhow!("magnet parse fail"))?;
+    Ok("magnet:?xt=urn:btih:".to_string() + &xt)
 }

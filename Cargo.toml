@@ -2,7 +2,7 @@
 
 [package]
 name = "rs115_bot"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2021"
 
 [profile.release]
@@ -32,3 +32,5 @@ rust-crypto = "0.2"
 
 regex = "1"
 lazy_static = "1.4.0"
+
+magnet-url = "2.0.0"
