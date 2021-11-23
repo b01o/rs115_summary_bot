@@ -4,16 +4,17 @@ use crypto::md5::Md5;
 use crypto::{digest::Digest, sha1::Sha1};
 use magnet_url::Magnet;
 use pakr_iec::iec;
+use scopeguard::defer;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use std::collections::HashSet;
 use std::fmt;
 
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use tokio::fs::File as TokioFile;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 pub async fn json2line(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
@@ -530,6 +531,7 @@ impl std::error::Error for WrongSha1LinkFormat {}
 
 use serde::de::Error;
 
+use crate::global::ROOT_FOLDER;
 use crate::io::{check_input, check_input_output, has_bom, open_without_bom};
 impl<'de> Deserialize<'de> for FileRepr {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -723,4 +725,45 @@ pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
         .map_err(|_| anyhow!("magnet parse fail"))?;
     let xt = magnet.xt.ok_or_else(|| anyhow!("magnet parse fail"))?;
     Ok("magnet:?xt=urn:btih:".to_string() + &xt)
+}
+
+pub async fn magnet_info(hash: &str) -> Result<String> {
+    let dest = format!("{}/{}.torrent", ROOT_FOLDER, hash.to_ascii_uppercase());
+    let dest = Path::new(&dest);
+
+    defer! {
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
+        }
+    }
+
+    let hash = hash.to_ascii_uppercase();
+    let url = format!("https://itorrents.org/torrent/{}.torrent", hash);
+    let response = reqwest::get(&url).await?;
+
+    log::info!("url: {} \n-> {}", url, response.status());
+
+    if response.status().is_success() {
+        let mut file = TokioFile::create(dest).await?;
+        file.write_all(&response.bytes().await?).await?;
+    }
+
+    let output = Command::new("torrenttools")
+        .arg("info")
+        .arg(dest.as_os_str())
+        .output()
+        .context("torrenttools lanuch failed")?;
+
+    if !output.status.success() {
+        bail!("torrenttools return err");
+    }
+    let res = std::str::from_utf8(&output.stdout)?;
+
+    Ok(res
+        .lines()
+        .rev()
+        .nth(1)
+        .ok_or_else(|| anyhow!("fail to the 2nd to last"))?
+        .trim_start()
+        .to_string())
 }

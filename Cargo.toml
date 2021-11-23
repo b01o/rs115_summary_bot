@@ -2,7 +2,7 @@
 
 [package]
 name = "rs115_bot"
-version = "2.1.1"
+version = "2.2.0"
 edition = "2021"
 
 [profile.release]
@@ -34,3 +34,5 @@ regex = "1"
 lazy_static = "1.4.0"
 
 magnet-url = "2.0.0"
+
+reqwest = "0.11"

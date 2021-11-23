@@ -146,6 +146,31 @@ async fn link_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
     Ok(())
 }
 
+async fn magnet_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
+    lazy_static! {
+        static ref MAGNET_RE: Regex =
+            Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40})").unwrap();
+    }
+    let mut reply: String = Default::default();
+    let hash: String;
+    let mut iter = MAGNET_RE.captures_iter(text);
+    if let Some(m) = iter.next() {
+        hash = m[1].to_string();
+    } else {
+        return Ok(());
+    }
+
+    if iter.next().is_some() {
+        // ignore more than one magnet
+        return Ok(());
+    }
+
+    reply.push_str(&magnet_info(&hash).await?);
+    cx.reply_to(reply).await?;
+
+    Ok(())
+}
+
 async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
@@ -162,8 +187,10 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
             }
         }
         link_check(&cx, text).await?;
+        magnet_check(&cx, text).await?;
     } else if let Some(caption) = msg.caption() {
         link_check(&cx, caption).await?;
+        magnet_check(&cx, caption).await?;
     }
 
     if let Some(doc) = msg.document() {

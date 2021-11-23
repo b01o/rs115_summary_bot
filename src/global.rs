@@ -10,4 +10,4 @@ FAQ:
 3. 目前去重和除错功能仅对 txt 格式的 115sha1 文件有效, 请需要进行相应操作用 line 格式的 txt 文件
 4. 目前仅支持20M内的文件。
 5. 有问题群里@我";
-pub const VERSION: &str = "2.1.1 Nov 22 2021 CST";
+pub const VERSION: &str = "2.2.0 Nov 23 2021 CST ";
