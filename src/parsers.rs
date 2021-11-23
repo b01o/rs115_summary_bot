@@ -10,11 +10,11 @@ use serde_bytes::ByteBuf;
 use std::collections::HashSet;
 use std::fmt;
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::{Path};
+use std::process::{Command};
 use std::str::FromStr;
 use tokio::fs::File as TokioFile;
-use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 pub async fn json2line(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
