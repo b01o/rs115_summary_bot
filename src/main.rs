@@ -154,16 +154,15 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
 
     // handle command
     if let Some(text) = msg.text() {
-        match BotCommand::parse(text, "") {
-            Ok(Command::Help) => help(&cx).await?,
-            Ok(Command::Version) => version(&cx).await?,
-            Err(_) => {}
+        if msg.chat.is_private() {
+            match BotCommand::parse(text, "") {
+                Ok(Command::Help) => help(&cx).await?,
+                Ok(Command::Version) => version(&cx).await?,
+                Err(_) => {}
+            }
         }
-
         link_check(&cx, text).await?;
-    }
-
-    if let Some(caption) = msg.caption() {
+    } else if let Some(caption) = msg.caption() {
         link_check(&cx, caption).await?;
     }
 
@@ -209,6 +208,7 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
     }
     Ok(())
 }
+
 async fn version(cx: &UpdateWithCx<Bot, Message>) -> Result<()> {
     cx.requester
         .send_message(cx.update.chat_id(), VERSION)

@@ -627,24 +627,6 @@ fn write_line(writer: &mut std::io::BufWriter<std::fs::File>, entity: &Sha1Entit
         write_line(writer, dir, suffix.to_owned());
     }
 }
-// async fn write_line_async(
-//     writer: &mut BufWriter<TokioFile>,
-//     entity: &Sha1Entity,
-//     suffix: String,
-// ) -> Result<()> {
-//     let suffix = suffix + "|" + &entity.dir_name;
-//     for file in &entity.files {
-//         let link = file.to_sha1_link();
-//         let line = link + &suffix + "\n";
-//         let mut buffer = line.as_bytes();
-//         writer.write_all_buf(&mut buffer).await?;
-//     }
-//     for dir in &entity.dirs {
-//         write_line_async(writer, dir, suffix.to_owned()).await?;
-//     }
-
-//     Ok(())
-// }
 
 #[derive(Debug, Deserialize)]
 struct Node(String, i64);
@@ -726,10 +708,6 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
     check_input(path).await?;
-
-    // let mut file = TokioFile::open(path).await.context("fail to open file")?;
-    // let mut buf = Vec::new();
-    // file.read_to_end(&mut buf).await?;
 
     let output = Command::new("transmission-show")
         .arg("-m")
