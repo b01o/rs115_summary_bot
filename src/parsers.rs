@@ -10,8 +10,8 @@ use serde_bytes::ByteBuf;
 use std::collections::HashSet;
 use std::fmt;
 
-use std::path::{Path};
-use std::process::{Command};
+use std::path::Path;
+use std::process::Command;
 use std::str::FromStr;
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -748,6 +748,29 @@ pub async fn magnet_info(hash: &str) -> Result<String> {
         file.write_all(&response.bytes().await?).await?;
     }
 
+    let get_name = Command::new("transmission-show")
+        .arg(dest.as_os_str())
+        .output()
+        .context("transmission-show lanuch failed")?;
+
+    if !get_name.status.success() {
+        bail!("transmission-show return err");
+    }
+
+    let mut name = std::str::from_utf8(&get_name.stdout)?
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow!("transmission-show stdout empty"))?;
+
+    name = if name.trim_start().starts_with("Name:") {
+        name.trim_start()
+            .strip_prefix("Name:")
+            .unwrap()
+            .trim_start()
+    } else {
+        "Unknown"
+    };
+
     let output = Command::new("torrenttools")
         .arg("info")
         .arg(dest.as_os_str())
@@ -759,11 +782,15 @@ pub async fn magnet_info(hash: &str) -> Result<String> {
     }
     let res = std::str::from_utf8(&output.stdout)?;
 
-    Ok(res
-        .lines()
-        .rev()
-        .nth(1)
-        .ok_or_else(|| anyhow!("fail to the 2nd to last"))?
-        .trim_start()
-        .to_string())
+    let res = format!(
+        "{}\n---\n总计：{}",
+        name,
+        res.lines()
+            .rev()
+            .nth(1)
+            .ok_or_else(|| anyhow!("fail to the 2nd to last"))?
+            .trim_start()
+            .to_string()
+    );
+    Ok(res)
 }
