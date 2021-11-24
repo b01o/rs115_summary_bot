@@ -81,7 +81,6 @@ async fn callback_handler(cx: UpdateWithCx<Bot, CallbackQuery>) -> Result<()> {
         requester: bot,
         update: query,
     } = &cx;
-    // let bot = bot.requester;
 
     if let (Some(version), Some(msg)) = (&query.data, &query.message) {
         let working = "请稍等...";
@@ -149,13 +148,19 @@ async fn link_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
 async fn magnet_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
     lazy_static! {
         static ref MAGNET_RE: Regex =
-            Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40})").unwrap();
+            Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})").unwrap();
     }
     let mut reply: String = Default::default();
     let hash: String;
     let mut iter = MAGNET_RE.captures_iter(text);
     if let Some(m) = iter.next() {
-        hash = m[1].to_string();
+        if m[1].len() == 40 {
+            hash = m[1].to_string();
+        } else if m[1].len() == 32 {
+            hash = base32_hex(&m[1])?;
+        } else {
+            unreachable!();
+        }
     } else {
         return Ok(());
     }

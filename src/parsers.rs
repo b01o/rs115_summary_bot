@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use anyhow::{bail, Context};
 use crypto::md5::Md5;
 use crypto::{digest::Digest, sha1::Sha1};
+use data_encoding::{BASE32_NOPAD, HEXUPPER};
 use magnet_url::Magnet;
 use pakr_iec::iec;
 use scopeguard::defer;
@@ -727,8 +728,30 @@ pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
     Ok("magnet:?xt=urn:btih:".to_string() + &xt)
 }
 
-pub async fn magnet_info(hash: &str) -> Result<String> {
-    let dest = format!("{}/{}.torrent", ROOT_FOLDER, hash.to_ascii_uppercase());
+// #[derive(Debug, Deserialize)]
+// struct TorrentInfo {
+//     name: String,
+//     #[serde(flatten)]
+//     others: serde_json::Value,
+// }
+
+// // type Other = std::collections::BTreeMap<String, Value>;
+
+// #[derive(Debug, Deserialize)]
+// struct TorrentRaw {
+//     info: TorrentInfo,
+
+//     #[serde(flatten)]
+//     others: serde_json::Value,
+// }
+
+pub fn base32_hex(content: &str) -> Result<String> {
+    let bytes = BASE32_NOPAD.decode(content.as_bytes())?;
+    Ok(HEXUPPER.encode(&bytes))
+}
+
+pub async fn magnet_info(hash_hex: &str) -> Result<String> {
+    let dest = format!("{}/{}.torrent", ROOT_FOLDER, hash_hex.to_ascii_uppercase());
     let dest = Path::new(&dest);
 
     defer! {
@@ -737,7 +760,7 @@ pub async fn magnet_info(hash: &str) -> Result<String> {
         }
     }
 
-    let hash = hash.to_ascii_uppercase();
+    let hash = hash_hex.to_ascii_uppercase();
     let url = format!("https://itorrents.org/torrent/{}.torrent", hash);
     let response = reqwest::get(&url).await?;
 
