@@ -728,6 +728,58 @@ pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
     Ok("magnet:?xt=urn:btih:".to_string() + &xt)
 }
 
+pub async fn get_torrent_name_async(path: &Path) -> Result<String> {
+    check_input(path).await?;
+
+    let get_name = Command::new("transmission-show")
+        .arg(path.as_os_str())
+        .output()
+        .context("transmission-show lanuch failed")?;
+
+    if !get_name.status.success() {
+        bail!("transmission-show return err");
+    }
+
+    let mut name = std::str::from_utf8(&get_name.stdout)?
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow!("transmission-show stdout empty"))?;
+
+    name = if name.trim_start().starts_with("Name:") {
+        name.trim_start()
+            .strip_prefix("Name:")
+            .unwrap()
+            .trim_start()
+    } else {
+        "Unknown"
+    };
+
+    Ok(name.to_string())
+}
+
+pub async fn get_torrent_summary_async(path: &Path) -> Result<String> {
+    check_input(path).await?;
+
+    let output = Command::new("torrenttools")
+        .arg("info")
+        .arg(path.as_os_str())
+        .output()
+        .context("torrenttools lanuch failed")?;
+
+    if !output.status.success() {
+        bail!("torrenttools return err");
+    }
+    let res = std::str::from_utf8(&output.stdout)?;
+
+    Ok(res
+        .lines()
+        .rev()
+        .nth(1)
+        .ok_or_else(|| anyhow!("fail to the 2nd to last"))?
+        .trim_start()
+        .to_string())
+}
+
 // #[derive(Debug, Deserialize)]
 // struct TorrentInfo {
 //     name: String,
@@ -770,50 +822,10 @@ pub async fn magnet_info(hash_hex: &str) -> Result<String> {
         let mut file = TokioFile::create(dest).await?;
         file.write_all(&response.bytes().await?).await?;
     }
-
-    let get_name = Command::new("transmission-show")
-        .arg(dest.as_os_str())
-        .output()
-        .context("transmission-show lanuch failed")?;
-
-    if !get_name.status.success() {
-        bail!("transmission-show return err");
-    }
-
-    let mut name = std::str::from_utf8(&get_name.stdout)?
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow!("transmission-show stdout empty"))?;
-
-    name = if name.trim_start().starts_with("Name:") {
-        name.trim_start()
-            .strip_prefix("Name:")
-            .unwrap()
-            .trim_start()
-    } else {
-        "Unknown"
-    };
-
-    let output = Command::new("torrenttools")
-        .arg("info")
-        .arg(dest.as_os_str())
-        .output()
-        .context("torrenttools lanuch failed")?;
-
-    if !output.status.success() {
-        bail!("torrenttools return err");
-    }
-    let res = std::str::from_utf8(&output.stdout)?;
-
     let res = format!(
-        "{}\n---\n总计：{}",
-        name,
-        res.lines()
-            .rev()
-            .nth(1)
-            .ok_or_else(|| anyhow!("fail to the 2nd to last"))?
-            .trim_start()
-            .to_string()
+        "<code>{}</code>\n---\n总计: {}",
+        get_torrent_name_async(dest).await?,
+        get_torrent_summary_async(dest).await?,
     );
     Ok(res)
 }
