@@ -6,7 +6,7 @@ use data_encoding::{BASE32_NOPAD, HEXUPPER};
 use magnet_url::Magnet;
 use pakr_iec::iec;
 use scopeguard::defer;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_bytes::ByteBuf;
 use std::collections::HashSet;
 use std::fmt;
@@ -81,7 +81,7 @@ pub async fn is_valid_line(input: &Path) -> Result<()> {
         "failed to read line from file: {}",
         input.to_string_lossy()
     ))? {
-        if line.len() > 300 || line.starts_with('{') || line.starts_with('[') {
+        if line.len() > 3000 || line.starts_with('{') || line.starts_with('[') {
             return Err(WrongSha1LinkFormat.into());
         }
 
@@ -270,6 +270,7 @@ pub fn line_summary_mem(content: &str) -> Result<Summary> {
         }
         num_lines += 1;
         let mut parts = line.split('|');
+        // log::info!("{}", line);
         let size: u64 = parts
             .nth(1)
             .ok_or_else(|| anyhow!("wrong format"))?
@@ -324,6 +325,7 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
         if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
             continue;
         }
+        // log::info!("{}", line);
         num_lines += 1;
         let mut parts = line.split('|');
         let size: u64 = parts
@@ -405,11 +407,21 @@ impl std::fmt::Display for Summary {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sha1Entity {
+    #[serde(deserialize_with = "from_dirty_string")]
     dir_name: String,
     files: Vec<FileRepr>,
     dirs: Vec<Self>,
     #[serde(skip_serializing)]
     id: Option<u64>,
+}
+
+fn from_dirty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut s: String = Deserialize::deserialize(deserializer)?;
+    s.retain(|c| c != '\r' && c != '\n' && c != '\\');
+    Ok(s)
 }
 
 impl Sha1Entity {
@@ -441,6 +453,7 @@ impl FromStr for Sha1Entity {
 
 #[derive(Debug)]
 pub struct FileRepr {
+    // #[serde(deserialize_with = "from_dirty_string")]
     name: String,
     size: u64,
     sha1: String,
@@ -553,6 +566,8 @@ impl<'de> Deserialize<'de> for FileRepr {
         if name.starts_with("115://") {
             name = name.strip_prefix("115://").unwrap().to_owned();
         }
+        name.retain(|c| c != '\n' && c != '\r');
+
         let size = sp
             .next()
             .ok_or(WrongSha1LinkFormat)

@@ -11,4 +11,4 @@ FAQ:
 4. 目前仅支持20M内的文件。
 5. 有问题群里@我";
 
-pub const VERSION: &str = "2.2.2 Nov 26 2021 CST 测试磁力汇报中";
+pub const VERSION: &str = "2.2.3 Nov 27 2021 CST 测试磁力汇报中";
