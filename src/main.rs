@@ -263,6 +263,7 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
                 log::info!("getting a json");
                 json_handler(&cx, doc).await?;
             } else if *doc_type == "application/x-bittorrent" {
+                log::info!("getting a torrent");
                 let path = download_file(bot, doc).await?;
                 defer! { let _ = std::fs::remove_file(&path); }
 

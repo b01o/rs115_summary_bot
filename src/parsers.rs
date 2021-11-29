@@ -775,24 +775,30 @@ pub async fn get_torrent_name_async(path: &Path) -> Result<String> {
 pub async fn get_torrent_summary_async(path: &Path) -> Result<String> {
     check_input(path).await?;
 
-    let output = Command::new("torrenttools")
-        .arg("info")
+    let output = Command::new("transmission-show")
         .arg(path.as_os_str())
         .output()
-        .context("torrenttools lanuch failed")?;
+        .context("transmission lanuch failed")?;
 
     if !output.status.success() {
-        bail!("torrenttools return err");
+        bail!("transmission return err");
     }
     let res = std::str::from_utf8(&output.stdout)?;
+    let mut lines = res.lines();
 
-    Ok(res
-        .lines()
-        .rev()
-        .nth(1)
-        .ok_or_else(|| anyhow!("fail to the 2nd to last"))?
-        .trim_start()
-        .to_string())
+    for line in &mut lines {
+        if line.trim_start().starts_with("Total Size:") {
+            return Ok(line
+                .trim_start()
+                .strip_prefix("Total Size:")
+                .unwrap()
+                .to_string());
+        } else if line.starts_with("TRACKERS") {
+            break;
+        }
+    }
+
+    bail!("fail to find summary in transmission-show")
 }
 
 // #[derive(Debug, Deserialize)]

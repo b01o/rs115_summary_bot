@@ -2,7 +2,7 @@
 
 [package]
 name = "rs115_bot"
-version = "2.2.3"
+version = "2.2.4"
 edition = "2021"
 
 [profile.release]
