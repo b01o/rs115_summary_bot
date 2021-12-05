@@ -3,8 +3,10 @@ use anyhow::{bail, Context};
 use crypto::md5::Md5;
 use crypto::{digest::Digest, sha1::Sha1};
 use data_encoding::{BASE32_NOPAD, HEXUPPER};
+use lazy_static::lazy_static;
 use magnet_url::Magnet;
 use pakr_iec::iec;
+use regex::Regex;
 use scopeguard::defer;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_bytes::ByteBuf;
@@ -405,6 +407,7 @@ impl std::fmt::Display for Summary {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sha1Entity {
     #[serde(deserialize_with = "from_dirty_string")]
@@ -451,6 +454,7 @@ impl FromStr for Sha1Entity {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct FileRepr {
     // #[serde(deserialize_with = "from_dirty_string")]
@@ -646,9 +650,11 @@ fn write_line(writer: &mut std::io::BufWriter<std::fs::File>, entity: &Sha1Entit
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Node(String, i64);
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 struct File {
     path: Vec<String>,
@@ -657,6 +663,7 @@ struct File {
     md5sum: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Info {
     name: String,
@@ -678,6 +685,7 @@ pub struct Info {
     root_hash: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Torrent {
     pub info: Info,
@@ -801,23 +809,6 @@ pub async fn get_torrent_summary_async(path: &Path) -> Result<String> {
     bail!("fail to find summary in transmission-show")
 }
 
-// #[derive(Debug, Deserialize)]
-// struct TorrentInfo {
-//     name: String,
-//     #[serde(flatten)]
-//     others: serde_json::Value,
-// }
-
-// // type Other = std::collections::BTreeMap<String, Value>;
-
-// #[derive(Debug, Deserialize)]
-// struct TorrentRaw {
-//     info: TorrentInfo,
-
-//     #[serde(flatten)]
-//     others: serde_json::Value,
-// }
-
 pub fn base32_hex(content: &str) -> Result<String> {
     let bytes = BASE32_NOPAD.decode(content.as_bytes())?;
     Ok(HEXUPPER.encode(&bytes))
@@ -849,4 +840,59 @@ pub async fn magnet_info(hash_hex: &str) -> Result<String> {
         get_torrent_summary_async(dest).await?,
     );
     Ok(res)
+}
+
+pub async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
+    check_input_output(input, output).await?;
+
+    lazy_static! {
+        static ref MAGNET_RE: Regex =
+            Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})").unwrap();
+    }
+    let mut file = open_without_bom(input).await?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).await?;
+    let mut iter = MAGNET_RE.captures_iter(&content);
+    let mut list = Vec::new();
+    for capture in iter.by_ref() {
+        list.push(capture[1].to_owned());
+    }
+
+    if list.is_empty() {
+        bail!("no magnet found");
+    } else {
+        let mut res = String::new();
+        list.iter()
+            .for_each(|hash| res.push_str(&format!("magnet:?xt=urn:btih:{}\n", hash)));
+
+        let mut outfile = TokioFile::create(output).await?;
+        outfile.write_all(res.as_bytes()).await?;
+    }
+    Ok(())
+}
+
+pub async fn all_ed2k_from_file(input: &Path, output: &Path) -> Result<()> {
+    check_input_output(input, output).await?;
+    lazy_static! {
+        static ref ED2K_RE: Regex =
+            Regex::new(r"ed2k://\|file\|[^|]+\|\d+\|[a-fA-F0-9]{32}\|(h=[a-zA-Z2-7]{32}\|)?/")
+                .unwrap();
+    }
+
+    let mut file = open_without_bom(input).await?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).await?;
+    // let mut iter =
+    let mut res = String::new();
+    for mat in ED2K_RE.find_iter(&content) {
+        res.push_str(&format!("{}\n", mat.as_str()));
+    }
+
+    if res.is_empty() {
+        bail!("no ed2k found");
+    } else {
+        let mut outfile = TokioFile::create(output).await?;
+        outfile.write_all(res.as_bytes()).await?;
+    }
+    Ok(())
 }

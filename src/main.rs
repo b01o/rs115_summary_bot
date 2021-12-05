@@ -1,12 +1,14 @@
 use anyhow::Result;
+
 use lazy_static::lazy_static;
 use regex::Regex;
 use rs115_bot::commands::Command;
-use rs115_bot::message_handlers::{download_file, json_handler, line_handler};
+use rs115_bot::message_handlers::{command_check, download_file, json_handler, line_handler};
 use rs115_bot::parsers::*;
 use rs115_bot::{callbacks::*, global::*};
 use scopeguard::defer;
 use std::path::Path;
+
 use strum::IntoEnumIterator;
 use teloxide::adaptors::throttle::Limits;
 use teloxide::error_handlers::OnError;
@@ -219,7 +221,7 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
     }
 
     // handle command
-    if let Some(text) = msg.text() {
+    let text = if let Some(text) = msg.text() {
         if msg.chat.is_private() {
             match BotCommand::parse(text, "") {
                 Ok(Command::Help) => help(&cx).await?,
@@ -227,11 +229,15 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
                 Err(_) => {}
             }
         }
+        Some(text)
+    } else {
+        msg.caption()
+    };
+
+    if let Some(text) = text {
         link_check(&cx, text).await?;
         magnet_check(&cx, text).await?;
-    } else if let Some(caption) = msg.caption() {
-        link_check(&cx, caption).await?;
-        magnet_check(&cx, caption).await?;
+        command_check(&cx, text).await?;
     }
 
     if let Some(doc) = msg.document() {

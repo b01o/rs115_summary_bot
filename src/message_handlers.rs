@@ -1,17 +1,24 @@
 use crate::{
     global::{Bot, DEBUG_CC_ID, ROOT_FOLDER},
     parsers::{
-        check_dup_n_err, is_valid_line, json_summary, line_summary, path_to_sha1_entity, Sha1Entity,
+        all_ed2k_from_file, all_magnet_from_file, check_dup_n_err, is_valid_line, json_summary,
+        line_summary, path_to_sha1_entity, Sha1Entity,
     },
 };
 use anyhow::{anyhow, Result};
-use std::path::{Path, PathBuf};
+use chrono::Utc;
+use data_encoding::BASE32_NOPAD;
+use scopeguard::defer;
+use std::{
+    fs::remove_file,
+    path::{Path, PathBuf},
+};
 use teloxide::{
     net::Download,
     payloads::SendMessageSetters,
     prelude::{Request, Requester, UpdateWithCx},
     requests::HasPayload,
-    types::{Document, InlineKeyboardButton, InlineKeyboardMarkup, Message},
+    types::{Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message},
 };
 use tokio::fs::File;
 
@@ -169,5 +176,126 @@ pub async fn json_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
         let _ = std::fs::remove_file(&path);
     }
     request.await?;
+    Ok(())
+}
+
+pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
+    if !text.starts_with('\'') || cx.update.chat.is_private() {
+        // ignore
+        return Ok(());
+    }
+
+    let replied_msg = if let Some(msg) = cx.update.reply_to_message() {
+        msg
+    } else {
+        return Ok(());
+    };
+
+    let now = Utc::now().timestamp();
+    let hours_elapsed = (now - replied_msg.date as i64) / 60 / 60;
+    // ignore all replies to 24 hours before
+    if hours_elapsed > 23 {
+        return Ok(());
+    }
+
+    match text {
+        "'file magnet" | "'f magnet" => {
+            let doc = if let Some(doc) = replied_msg.document() {
+                doc
+            } else {
+                return Ok(());
+            };
+            let target_file_path = download_file(&cx.requester, doc).await?;
+            let filename = doc
+                .file_name
+                .to_owned()
+                .unwrap_or_else(|| "default_name".to_owned());
+            let new_filename = if filename.contains('.') {
+                format!(
+                    "magnet_{}_{}.txt",
+                    filename.rsplit_once('.').unwrap().0,
+                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+                )
+            } else {
+                format!(
+                    "magnet_{}_{}.txt",
+                    filename,
+                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+                )
+            };
+
+            let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+            let output_path = Path::new(&output_path);
+            defer! {
+                if target_file_path.exists() {
+                    let _ = remove_file(&target_file_path);
+                }
+                if output_path.exists(){
+                    let _ = remove_file(output_path);
+                }
+            }
+
+            all_magnet_from_file(&target_file_path, output_path).await?;
+
+            let input_file = InputFile::File(output_path.to_path_buf());
+            let mut req = cx
+                .requester
+                .send_document(replied_msg.chat_id(), input_file);
+
+            // let mut req = cx.requester.send_message(replied_msg.chat_id(), "hey");
+            let payload = req.payload_mut();
+            payload.reply_to_message_id = Some(replied_msg.id);
+            req.await?;
+        }
+        "'file ed2k" | "'f ed2k" => {
+            let doc = if let Some(doc) = replied_msg.document() {
+                doc
+            } else {
+                return Ok(());
+            };
+            let target_file_path = download_file(&cx.requester, doc).await?;
+            let filename = doc
+                .file_name
+                .to_owned()
+                .unwrap_or_else(|| "default_name".to_owned());
+            let new_filename = if filename.contains('.') {
+                format!(
+                    "ed2k_{}_{}.txt",
+                    filename.rsplit_once('.').unwrap().0,
+                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+                )
+            } else {
+                format!(
+                    "ed2k_{}_{}.txt",
+                    filename,
+                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+                )
+            };
+
+            let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+            let output_path = Path::new(&output_path);
+            defer! {
+                if target_file_path.exists() {
+                    let _ = remove_file(&target_file_path);
+                }
+                if output_path.exists(){
+                    let _ = remove_file(output_path);
+                }
+            }
+
+            all_ed2k_from_file(&target_file_path, output_path).await?;
+
+            let input_file = InputFile::File(output_path.to_path_buf());
+            let mut req = cx
+                .requester
+                .send_document(replied_msg.chat_id(), input_file);
+
+            let payload = req.payload_mut();
+            payload.reply_to_message_id = Some(replied_msg.id);
+            req.await?;
+        }
+        _ => {}
+    }
+
     Ok(())
 }
