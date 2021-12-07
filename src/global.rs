@@ -11,4 +11,4 @@ FAQ:
 4. 目前仅支持20M内的文件。
 5. 有问题群里@我";
 
-pub const VERSION: &str = "2.3.0 Dec 05 2021 CST 测试群内提取中";
+pub const VERSION: &str = "2.3.1 Dec 06 2021 CST 测试群内提取中";

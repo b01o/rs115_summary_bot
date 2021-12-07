@@ -194,10 +194,12 @@ fn get_urls(msg: &Message) -> Option<Vec<String>> {
 
     for entity in entities {
         if entity.kind == MessageEntityKind::Url {
-            let utf16_repr = msg.text().unwrap().encode_utf16().collect::<Vec<u16>>();
-            list.push(String::from_utf16_lossy(
-                &utf16_repr[entity.offset..entity.offset + entity.length],
-            ));
+            if let Some(utf16_repr) = msg.text() {
+                let utf16_repr = utf16_repr.encode_utf16().collect::<Vec<u16>>();
+                list.push(String::from_utf16_lossy(
+                    &utf16_repr[entity.offset..entity.offset + entity.length],
+                ));
+            }
         }
     }
 
