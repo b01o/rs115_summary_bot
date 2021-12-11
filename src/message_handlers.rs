@@ -1,26 +1,30 @@
 use crate::{
     global::{Bot, DEBUG_CC_ID, ROOT_FOLDER},
     parsers::{
-        all_ed2k_from_file, all_magnet_from_file, check_dup_n_err, is_valid_line, json_summary,
-        line_summary, path_to_sha1_entity, Sha1Entity,
+        all_ed2k_from_file, all_magnet_from_file, all_magnet_from_text, check_dup_n_err,
+        file_encoding, is_valid_line, json_summary, line_summary, path_to_sha1_entity,
+        write_all_to_file, Sha1Entity,
     },
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use data_encoding::BASE32_NOPAD;
 use scopeguard::defer;
 use std::{
     fs::remove_file,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use teloxide::{
     net::Download,
     payloads::SendMessageSetters,
     prelude::{Request, Requester, UpdateWithCx},
     requests::HasPayload,
-    types::{Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message},
+    types::{
+        Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, MessageEntityKind,
+    },
 };
-use tokio::fs::File;
+use tokio::{fs::File, time::sleep};
 
 fn btn(
     name: impl Into<String>,
@@ -179,6 +183,198 @@ pub async fn json_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
     Ok(())
 }
 
+async fn reply_document_to(
+    cx: &UpdateWithCx<Bot, Message>,
+    output_path: &Path,
+    replied_msg: &Message,
+) -> Result<()> {
+    let input_file = InputFile::File(output_path.to_path_buf());
+    let mut req = cx
+        .requester
+        .send_document(replied_msg.chat_id(), input_file);
+
+    let payload = req.payload_mut();
+    payload.reply_to_message_id = Some(replied_msg.id);
+    req.await?;
+    Ok(())
+}
+
+async fn f_ed2k(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Result<()> {
+    let doc = if let Some(doc) = replied_msg.document() {
+        doc
+    } else {
+        return Ok(());
+    };
+    let target_file_path = download_file(&cx.requester, doc).await?;
+    let filename = doc
+        .file_name
+        .to_owned()
+        .unwrap_or_else(|| "default_name".to_owned());
+    let new_filename = if filename.contains('.') {
+        format!(
+            "ed2k_{}_{}.txt",
+            filename.rsplit_once('.').unwrap().0,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    } else {
+        format!(
+            "ed2k_{}_{}.txt",
+            filename,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    };
+
+    let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+    let output_path = Path::new(&output_path);
+    defer! {
+        if target_file_path.exists() {
+            let _ = remove_file(&target_file_path);
+        }
+        if output_path.exists(){
+            let _ = remove_file(output_path);
+        }
+    }
+
+    all_ed2k_from_file(&target_file_path, output_path).await?;
+    reply_document_to(cx, output_path, replied_msg).await?;
+    Ok(())
+}
+
+async fn f_magnet(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Result<()> {
+    let doc = if let Some(doc) = replied_msg.document() {
+        doc
+    } else {
+        return Ok(());
+    };
+    let target_file_path = download_file(&cx.requester, doc).await?;
+    let filename = doc
+        .file_name
+        .to_owned()
+        .unwrap_or_else(|| "default_name".to_owned());
+    let new_filename = if filename.contains('.') {
+        format!(
+            "magnet_{}_{}.txt",
+            filename.rsplit_once('.').unwrap().0,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    } else {
+        format!(
+            "magnet_{}_{}.txt",
+            filename,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    };
+
+    let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+    let output_path = Path::new(&output_path);
+    defer! {
+        if target_file_path.exists() {
+            let _ = remove_file(&target_file_path);
+        }
+        if output_path.exists(){
+            let _ = remove_file(output_path);
+        }
+    }
+
+    all_magnet_from_file(&target_file_path, output_path).await?;
+    reply_document_to(cx, output_path, replied_msg).await?;
+    Ok(())
+}
+
+fn get_urls(msg: &Message) -> Option<Vec<String>> {
+    let mut list: Vec<String> = Default::default();
+
+    let entities = if let Some(entities) = msg.entities() {
+        entities
+    } else {
+        msg.caption_entities()?
+    };
+
+    for entity in entities {
+        if entity.kind == MessageEntityKind::Url {
+            if let Some(utf16_repr) = msg.text() {
+                let utf16_repr = utf16_repr.encode_utf16().collect::<Vec<u16>>();
+                list.push(String::from_utf16_lossy(
+                    &utf16_repr[entity.offset..entity.offset + entity.length],
+                ));
+            }
+        }
+    }
+
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+async fn w_magnet(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Result<()> {
+    let urls = get_urls(replied_msg);
+    let urls = if let Some(urls) = urls {
+        urls
+    } else {
+        // ignore if there is no urls
+        return Ok(());
+    };
+
+    let mut list = vec![];
+
+    for url in urls {
+        let response = reqwest::get(url).await?.text().await?;
+        let all_mag = all_magnet_from_text(&response).await;
+        if let Some(all_mag) = all_mag {
+            list.extend(all_mag);
+        }
+    }
+
+    let new_filename = format!(
+        "magnet_{}.txt",
+        BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+    );
+    let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+    let output_path = Path::new(&output_path);
+    defer! {
+        if output_path.exists(){
+            let _ = remove_file(output_path);
+        }
+    }
+
+    if list.is_empty() {
+        bail!("no magnet found!");
+    } else {
+        let mut res = String::new();
+        list.iter()
+            .for_each(|hash| res.push_str(&format!("magnet:?xt=urn:btih:{}\n", hash)));
+        write_all_to_file(output_path, res.as_bytes()).await?;
+    }
+
+    reply_document_to(cx, output_path, replied_msg).await?;
+    Ok(())
+}
+
+async fn f_encoding(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Result<()> {
+    let doc = if let Some(doc) = replied_msg.document() {
+        doc
+    } else {
+        return Ok(());
+    };
+    let target_file_path = download_file(&cx.requester, doc).await?;
+    let res = file_encoding(&target_file_path).await?;
+    let rep = if res.trim() == "unknown" {
+        "看不出来啥编码...".to_owned()
+    } else {
+        format!("编码可能是：{}", res)
+    };
+
+    let msg_to_del = cx.reply_to(rep).await?;
+    sleep(Duration::from_secs(30)).await;
+    cx.requester
+        .delete_message(msg_to_del.chat_id(), msg_to_del.id)
+        .await?;
+
+    Ok(())
+}
+
 pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
     if !text.starts_with('\'') || cx.update.chat.is_private() {
         // ignore
@@ -199,101 +395,10 @@ pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Resul
     }
 
     match text {
-        "'file magnet" | "'f magnet" => {
-            let doc = if let Some(doc) = replied_msg.document() {
-                doc
-            } else {
-                return Ok(());
-            };
-            let target_file_path = download_file(&cx.requester, doc).await?;
-            let filename = doc
-                .file_name
-                .to_owned()
-                .unwrap_or_else(|| "default_name".to_owned());
-            let new_filename = if filename.contains('.') {
-                format!(
-                    "magnet_{}_{}.txt",
-                    filename.rsplit_once('.').unwrap().0,
-                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
-                )
-            } else {
-                format!(
-                    "magnet_{}_{}.txt",
-                    filename,
-                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
-                )
-            };
-
-            let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
-            let output_path = Path::new(&output_path);
-            defer! {
-                if target_file_path.exists() {
-                    let _ = remove_file(&target_file_path);
-                }
-                if output_path.exists(){
-                    let _ = remove_file(output_path);
-                }
-            }
-
-            all_magnet_from_file(&target_file_path, output_path).await?;
-
-            let input_file = InputFile::File(output_path.to_path_buf());
-            let mut req = cx
-                .requester
-                .send_document(replied_msg.chat_id(), input_file);
-
-            // let mut req = cx.requester.send_message(replied_msg.chat_id(), "hey");
-            let payload = req.payload_mut();
-            payload.reply_to_message_id = Some(replied_msg.id);
-            req.await?;
-        }
-        "'file ed2k" | "'f ed2k" => {
-            let doc = if let Some(doc) = replied_msg.document() {
-                doc
-            } else {
-                return Ok(());
-            };
-            let target_file_path = download_file(&cx.requester, doc).await?;
-            let filename = doc
-                .file_name
-                .to_owned()
-                .unwrap_or_else(|| "default_name".to_owned());
-            let new_filename = if filename.contains('.') {
-                format!(
-                    "ed2k_{}_{}.txt",
-                    filename.rsplit_once('.').unwrap().0,
-                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
-                )
-            } else {
-                format!(
-                    "ed2k_{}_{}.txt",
-                    filename,
-                    BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
-                )
-            };
-
-            let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
-            let output_path = Path::new(&output_path);
-            defer! {
-                if target_file_path.exists() {
-                    let _ = remove_file(&target_file_path);
-                }
-                if output_path.exists(){
-                    let _ = remove_file(output_path);
-                }
-            }
-
-            all_ed2k_from_file(&target_file_path, output_path).await?;
-
-            let input_file = InputFile::File(output_path.to_path_buf());
-            let mut req = cx
-                .requester
-                .send_document(replied_msg.chat_id(), input_file);
-
-            let payload = req.payload_mut();
-            payload.reply_to_message_id = Some(replied_msg.id);
-            req.await?;
-        }
+        "'file magnet" | "'f magnet" => f_magnet(cx, replied_msg).await?,
+        "'file ed2k" | "'f ed2k" => f_ed2k(cx, replied_msg).await?,
+        "'file encoding" | "'f encoding" | "'f 编码" => f_encoding(cx, replied_msg).await?,
+        "'webpage magnet" | "'w magnet" => w_magnet(cx, replied_msg).await?,
         _ => {}
     }
 

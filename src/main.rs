@@ -16,7 +16,7 @@ use teloxide::prelude::{
     Dispatcher, DispatcherHandlerRx, Requester, RequesterExt, StreamExt, UpdateWithCx,
 };
 use teloxide::requests::HasPayload;
-use teloxide::types::{BotCommand as BC, Message, MessageEntityKind};
+use teloxide::types::{BotCommand as BC, Message};
 use teloxide::types::{BotCommandScope, CallbackQuery};
 use teloxide::utils::command::BotCommand;
 use tokio::fs::create_dir_all;
@@ -181,46 +181,11 @@ async fn magnet_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()>
     Ok(())
 }
 
-fn get_urls(msg: &Message) -> Option<Vec<String>> {
-    let mut list: Vec<String> = Default::default();
-
-    let entities = if let Some(entities) = msg.entities() {
-        entities
-    } else if let Some(entities) = msg.caption_entities() {
-        entities
-    } else {
-        return None;
-    };
-
-    for entity in entities {
-        if entity.kind == MessageEntityKind::Url {
-            if let Some(utf16_repr) = msg.text() {
-                let utf16_repr = utf16_repr.encode_utf16().collect::<Vec<u16>>();
-                list.push(String::from_utf16_lossy(
-                    &utf16_repr[entity.offset..entity.offset + entity.length],
-                ));
-            }
-        }
-    }
-
-    if list.is_empty() {
-        None
-    } else {
-        Some(list)
-    }
-}
-
 async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
     } = &cx;
-
-    if let Some(urls) = get_urls(msg) {
-        for url in urls {
-            println!("url: {}", url);
-        }
-    }
 
     // handle command
     let text = if let Some(text) = msg.text() {

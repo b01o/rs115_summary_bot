@@ -783,25 +783,42 @@ pub async fn get_torrent_name_async(path: &Path) -> Result<String> {
 pub async fn get_torrent_summary_async(path: &Path) -> Result<String> {
     check_input(path).await?;
 
-    let output = Command::new("transmission-show")
+    let output = Command::new("aria2c")
+        .arg("-S")
         .arg(path.as_os_str())
         .output()
-        .context("transmission lanuch failed")?;
+        .context("aria2c lanuch failed")?;
 
     if !output.status.success() {
-        bail!("transmission return err");
+        bail!("aria2c return err");
     }
     let res = std::str::from_utf8(&output.stdout)?;
     let mut lines = res.lines();
 
     for line in &mut lines {
-        if line.trim_start().starts_with("Total Size:") {
-            return Ok(line
+        if line.trim_start().starts_with("Total Length:") {
+            let mut summary = line
                 .trim_start()
-                .strip_prefix("Total Size:")
-                .unwrap()
-                .to_string());
-        } else if line.starts_with("TRACKERS") {
+                .strip_prefix("Total Length:")
+                .map(str::trim_start)
+                .map(|s| {
+                    s.split_once('(')
+                        .ok_or_else(|| anyhow!("cannot find torrent summary in split("))
+                })
+                .expect("checked, should start with Total Length...")?
+                .1
+                .trim();
+            if summary.ends_with(')') {
+                summary = summary.strip_suffix(')').unwrap();
+            }
+
+            let mut summary = summary.to_owned();
+            summary.retain(|x| x != ',');
+            let num: u128 = summary.parse()?;
+            let summary = to_iec(num);
+
+            return Ok(summary);
+        } else if line.starts_with("Files") {
             break;
         }
     }
@@ -842,13 +859,44 @@ pub async fn magnet_info(hash_hex: &str) -> Result<String> {
     Ok(res)
 }
 
+lazy_static! {
+    static ref MAGNET_RE: Regex =
+        Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})").unwrap();
+}
+
+pub async fn all_magnet_from_text(text: &str) -> Option<Vec<String>> {
+    let mut iter = MAGNET_RE.captures_iter(text);
+    let mut list = Vec::new();
+    for capture in iter.by_ref() {
+        list.push(capture[1].to_owned());
+    }
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+pub async fn write_all_to_file(output: &Path, bytes: &[u8]) -> Result<()> {
+    let mut outfile = TokioFile::create(output).await?;
+    outfile.write_all(bytes).await?;
+    Ok(())
+}
+
+pub async fn file_encoding(input: &Path) -> Result<String> {
+    check_input(input).await?;
+    let output = Command::new("uchardet")
+        .arg(input.as_os_str())
+        .output()
+        .context("uchardet lanuch failed")?;
+
+    let res = std::str::from_utf8(&output.stdout)?;
+    Ok(res.to_string())
+}
+
 pub async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
-    lazy_static! {
-        static ref MAGNET_RE: Regex =
-            Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})").unwrap();
-    }
     let mut file = open_without_bom(input).await?;
     let mut content = String::new();
     file.read_to_string(&mut content).await?;
@@ -864,9 +912,7 @@ pub async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
         let mut res = String::new();
         list.iter()
             .for_each(|hash| res.push_str(&format!("magnet:?xt=urn:btih:{}\n", hash)));
-
-        let mut outfile = TokioFile::create(output).await?;
-        outfile.write_all(res.as_bytes()).await?;
+        write_all_to_file(output, res.as_bytes()).await?;
     }
     Ok(())
 }

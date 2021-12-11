@@ -9,6 +9,8 @@ FAQ:
 2. 仅含有目录信息的 txt 才支持转换成 json 文件。
 3. 目前去重和除错功能仅对 txt 格式的 115sha1 文件有效, 请需要进行相应操作用 line 格式的 txt 文件
 4. 目前仅支持20M内的文件。
-5. 有问题群里@我";
+5. 有问题群里@我
 
-pub const VERSION: &str = "2.3.1 Dec 06 2021 CST 测试群内提取中";
+更多详细内容：https://telegra.ph/het-12-01";
+
+pub const VERSION: &str = "2.3.2 Dec 08 2021 CST 测试群内提取中";
