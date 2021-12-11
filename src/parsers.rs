@@ -894,6 +894,32 @@ pub async fn file_encoding(input: &Path) -> Result<String> {
     Ok(res.to_string())
 }
 
+pub async fn file_to_utf8(input: &Path, output: &Path) -> Result<String> {
+    check_input_output(input, output).await?;
+
+    let out = Command::new("uchardet")
+        .arg(input.as_os_str())
+        .output()
+        .context("uchardet lanuch failed")?;
+    let res = std::str::from_utf8(&out.stdout)?;
+
+    if res.trim().to_lowercase() == "unknown" {
+        return Ok("看不出来啥编码...".to_string());
+    } else if res.to_lowercase().trim() == "ascii".to_lowercase()
+        || res.to_lowercase().trim() == "utf-8".to_lowercase()
+    {
+        return Ok("已经是正常的编码，没有必要再转换了...".to_string());
+    }
+
+    let _output = Command::new("utf8ft")
+        .arg(input.as_os_str())
+        .arg(output.as_os_str())
+        .output()
+        .context("utf8ft lanuch failed")?;
+
+    Ok(Default::default())
+}
+
 pub async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 

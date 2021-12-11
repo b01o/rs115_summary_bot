@@ -2,8 +2,8 @@ use crate::{
     global::{Bot, DEBUG_CC_ID, ROOT_FOLDER},
     parsers::{
         all_ed2k_from_file, all_magnet_from_file, all_magnet_from_text, check_dup_n_err,
-        file_encoding, is_valid_line, json_summary, line_summary, path_to_sha1_entity,
-        write_all_to_file, Sha1Entity,
+        file_encoding, file_to_utf8, is_valid_line, json_summary, line_summary,
+        path_to_sha1_entity, write_all_to_file, Sha1Entity,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -359,6 +359,13 @@ async fn f_encoding(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> R
         return Ok(());
     };
     let target_file_path = download_file(&cx.requester, doc).await?;
+
+    defer! {
+        if target_file_path.exists() {
+            let _ = remove_file(&target_file_path);
+        }
+    }
+
     let res = file_encoding(&target_file_path).await?;
     let rep = if res.trim() == "unknown" {
         "看不出来啥编码...".to_owned()
@@ -372,6 +379,56 @@ async fn f_encoding(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> R
         .delete_message(msg_to_del.chat_id(), msg_to_del.id)
         .await?;
 
+    Ok(())
+}
+
+async fn f_utf8(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Result<()> {
+    let doc = if let Some(doc) = replied_msg.document() {
+        doc
+    } else {
+        return Ok(());
+    };
+    let target_file_path = download_file(&cx.requester, doc).await?;
+
+    let filename = doc
+        .file_name
+        .to_owned()
+        .unwrap_or_else(|| "default_name".to_owned());
+    let new_filename = if filename.contains('.') {
+        format!(
+            "utf8_{}_{}.txt",
+            filename.rsplit_once('.').unwrap().0,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    } else {
+        format!(
+            "utf8_{}_{}.txt",
+            filename,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    };
+
+    let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+    let output_path = Path::new(&output_path);
+    defer! {
+        if target_file_path.exists() {
+            let _ = remove_file(&target_file_path);
+        }
+        if output_path.exists(){
+            let _ = remove_file(output_path);
+        }
+    }
+    let res = file_to_utf8(&target_file_path, output_path).await?;
+
+    if res.is_empty() {
+        reply_document_to(cx, output_path, replied_msg).await?;
+    } else {
+        let msg_to_del = cx.reply_to(res).await?;
+        sleep(Duration::from_secs(30)).await;
+        cx.requester
+            .delete_message(msg_to_del.chat_id(), msg_to_del.id)
+            .await?;
+    }
     Ok(())
 }
 
@@ -398,6 +455,7 @@ pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Resul
         "'file magnet" | "'f magnet" => f_magnet(cx, replied_msg).await?,
         "'file ed2k" | "'f ed2k" => f_ed2k(cx, replied_msg).await?,
         "'file encoding" | "'f encoding" | "'f 编码" => f_encoding(cx, replied_msg).await?,
+        "'file utf8" | "'f utf8" => f_utf8(cx, replied_msg).await?,
         "'webpage magnet" | "'w magnet" => w_magnet(cx, replied_msg).await?,
         _ => {}
     }
