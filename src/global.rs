@@ -13,4 +13,4 @@ FAQ:
 
 更多详细内容：https://telegra.ph/het-12-01";
 
-pub const VERSION: &str = "2.3.3 Dec 11 2021 CST 测试群内提取/转换中";
+pub const VERSION: &str = "2.3.4 Dec 13 2021 CST 测试群内提取/转换中";

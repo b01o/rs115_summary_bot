@@ -852,8 +852,9 @@ pub async fn magnet_info(hash_hex: &str) -> Result<String> {
         file.write_all(&response.bytes().await?).await?;
     }
     let res = format!(
-        "<code>{}</code>\n---\n总计: {}",
+        "<code>{}</code>\t|\t<u><a href=\"{}\">种子文件</a></u> \n---\n总计: {}",
         get_torrent_name_async(dest).await?,
+        url,
         get_torrent_summary_async(dest).await?,
     );
     Ok(res)
