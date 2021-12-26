@@ -3,7 +3,9 @@ use anyhow::Result;
 use lazy_static::lazy_static;
 use regex::Regex;
 use rs115_bot::commands::Command;
-use rs115_bot::message_handlers::{command_check, download_file, json_handler, line_handler};
+use rs115_bot::message_handlers::{
+    command_check, db_handler, download_file, json_handler, line_handler, spam_check,
+};
 use rs115_bot::parsers::*;
 use rs115_bot::{callbacks::*, global::*};
 use scopeguard::defer;
@@ -103,6 +105,7 @@ async fn callback_handler(cx: UpdateWithCx<Bot, CallbackQuery>) -> Result<()> {
         };
 
         bot.answer_callback_query(&query.id).await?;
+        // query.inline_message_id
 
         if !found_cache {
             let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
@@ -186,6 +189,12 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
         requester: bot,
         update: msg,
     } = &cx;
+    // log::info!("getting a msg!!");
+
+    // if let teloxide::types::MessageKind::NewChatMembers(member) = &msg.kind {
+    //     let new_members = &member.new_chat_members;
+    //     spam_check(&cx, new_members).await?;
+    // }
 
     // handle command
     let text = if let Some(text) = msg.text() {
@@ -205,10 +214,10 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
         link_check(&cx, text).await?;
         magnet_check(&cx, text).await?;
         command_check(&cx, text).await?;
+        // spam_check_dummy(&cx, text).await?;
     }
 
     if let Some(doc) = msg.document() {
-        // log::info!("getting doc");
         if let Some(size) = &doc.file_size {
             if *size > 1024 * 1024 * 20 {
                 //ignore
@@ -217,11 +226,21 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
         }
 
         if let Some(doc_type) = &doc.mime_type {
-            if *doc_type == mime::TEXT_PLAIN
+            if doc
+                .file_name
+                .as_ref()
+                .unwrap_or(&"".to_string())
+                .to_lowercase()
+                .ends_with(".db")
+            {
+                log::info!("getting a db");
+                db_handler(&cx, doc).await?;
+            } else if *doc_type == mime::TEXT_PLAIN
                 || doc
                     .file_name
                     .as_ref()
                     .unwrap_or(&"".to_string())
+                    .to_lowercase()
                     .ends_with(".txt")
             {
                 log::info!("getting a txt");
@@ -231,6 +250,7 @@ async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
                     .file_name
                     .as_ref()
                     .unwrap_or(&"".to_string())
+                    .to_lowercase()
                     .ends_with(".json")
             {
                 log::info!("getting a json");

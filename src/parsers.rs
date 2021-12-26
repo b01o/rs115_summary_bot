@@ -375,11 +375,11 @@ pub fn json_summary(entity: &Sha1Entity) -> Result<Summary> {
 
 #[derive(Debug)]
 pub struct Summary {
-    total_size: u64,
-    max: u64,
-    min: u64,
-    mid: f64,
-    total_files: u64,
+    pub total_size: u64,
+    pub max: u64,
+    pub min: u64,
+    pub mid: f64,
+    pub total_files: u64,
     pub has_folder: bool,
 }
 
@@ -944,13 +944,12 @@ pub async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+lazy_static! {
+    static ref ED2K_RE: Regex =
+        Regex::new(r"ed2k://\|file\|[^|]+\|\d+\|[a-fA-F0-9]{32}\|(h=[a-zA-Z2-7]{32}\|)?/").unwrap();
+}
 pub async fn all_ed2k_from_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
-    lazy_static! {
-        static ref ED2K_RE: Regex =
-            Regex::new(r"ed2k://\|file\|[^|]+\|\d+\|[a-fA-F0-9]{32}\|(h=[a-zA-Z2-7]{32}\|)?/")
-                .unwrap();
-    }
 
     let mut file = open_without_bom(input).await?;
     let mut content = String::new();

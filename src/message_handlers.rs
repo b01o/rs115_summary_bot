@@ -1,15 +1,20 @@
 use crate::{
+    decryption::preid_decrypt,
     global::{Bot, DEBUG_CC_ID, ROOT_FOLDER},
     parsers::{
         all_ed2k_from_file, all_magnet_from_file, all_magnet_from_text, check_dup_n_err,
         file_encoding, file_to_utf8, is_valid_line, json_summary, line_summary,
-        path_to_sha1_entity, write_all_to_file, Sha1Entity,
+        path_to_sha1_entity, write_all_to_file, Sha1Entity, Summary,
     },
 };
+
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use data_encoding::BASE32_NOPAD;
+use lazy_static::lazy_static;
+use regex::Regex;
 use scopeguard::defer;
+use sqlx::{Row, SqlitePool};
 use std::{
     fs::remove_file,
     path::{Path, PathBuf},
@@ -21,7 +26,8 @@ use teloxide::{
     prelude::{Request, Requester, UpdateWithCx},
     requests::HasPayload,
     types::{
-        Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, MessageEntityKind,
+        Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message,
+        MessageEntityKind, User,
     },
 };
 use tokio::{fs::File, time::sleep};
@@ -180,6 +186,122 @@ pub async fn json_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
         let _ = std::fs::remove_file(&path);
     }
     request.await?;
+    Ok(())
+}
+
+lazy_static! {
+    static ref PATH_ID_REGEX: Regex = Regex::new(r":\d*?/").unwrap();
+}
+
+pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
+    let UpdateWithCx {
+        requester: bot,
+        update: msg,
+    } = &cx;
+    let db_path = download_file(bot, doc).await?;
+    let pool = SqlitePool::connect(&format!("sqlite:{}", db_path.to_string_lossy())).await?;
+    let rows = sqlx::query(
+    r#"SELECT "115://"|| FILENAME || '|' || FILESIZE|| '|' || SHA1, PREID, PATHSTR FROM "myfiles" WHERE SHA1!=0 AND PREID!=0;
+"#).fetch_all(&pool).await?;
+
+    let mut content: String = String::new();
+
+    for row in rows {
+        let head = row
+            .try_get::<&str, usize>(0)?
+            .replace(" ", "_")
+            .replace("\\", "")
+            .replace("\n", "");
+        let preid = preid_decrypt(row.try_get::<&str, usize>(1)?)?;
+        let path_str = row.try_get::<&str, usize>(2)?;
+        let path_str = path_str
+            .replace(" ", "_")
+            .replace("\\", "")
+            .replace("\n", "");
+
+        let path_str = PATH_ID_REGEX.replace_all(&path_str, "|");
+        let path_str = path_str
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow!("wrong db format..."))?
+            .0;
+
+        content.push_str(&format!("{}|{}|{}\n", head, preid, path_str));
+    }
+
+    let filename = doc
+        .file_name
+        .to_owned()
+        .unwrap_or_else(|| "default_name".to_owned());
+
+    let new_filename = if filename.contains('.') {
+        format!(
+            "{}_sha1导出_{}.txt",
+            filename.rsplit_once('.').unwrap().0,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    } else {
+        format!(
+            "{}_sha1导出_{}.txt",
+            filename,
+            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+        )
+    };
+
+    let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+    let output_path = Path::new(&output_path);
+    defer! {
+        if db_path.exists() {
+            let _ = remove_file(&db_path);
+        }
+        if output_path.exists(){
+            let _ = remove_file(output_path);
+        }
+    }
+
+    let summary = sqlx::query(
+    r#"SELECT SUM(FILESIZE), MAX(FILESIZE), MIN(FILESIZE), COUNT(FILESIZE) FROM "myfiles" WHERE SHA1!=0 AND PREID!=0 ORDER BY "SNO";
+"#).fetch_one(&pool).await?;
+
+    let total_size = summary.try_get::<i64, usize>(0)?.try_into()?;
+    let max = summary.try_get::<i64, usize>(1)?.try_into()?;
+    let min = summary.try_get::<i64, usize>(2)?.try_into()?;
+    let total_files = summary.try_get::<i64, usize>(3)?.try_into()?;
+    let mid = sqlx::query(
+        r#"
+SELECT AVG(FILESIZE)
+FROM (SELECT FILESIZE
+      FROM "myfiles"
+      WHERE SHA1!=0 AND PREID!=0
+      ORDER BY FILESIZE
+      LIMIT 2 - (SELECT COUNT(*) FROM "myfiles" WHERE SHA1!=0 AND PREID!=0) % 2    -- odd 1, even 2
+      OFFSET (SELECT (COUNT(*) - 1) / 2
+              FROM "myfiles" WHERE SHA1!=0 AND PREID!=0 ))
+              "#,
+    )
+    .fetch_one(&pool)
+    .await?
+    .try_get::<f64, usize>(0)?;
+
+    let summary = Summary {
+        total_size,
+        max,
+        min,
+        mid,
+        total_files,
+        has_folder: true,
+    };
+
+    if !content.is_empty() {
+        let _ = copied(bot, msg).await;
+        write_all_to_file(output_path, content.as_bytes()).await?;
+        let input_file = InputFile::File(output_path.to_path_buf());
+        let mut req = cx.requester.send_document(msg.chat_id(), input_file);
+        let payload = req.payload_mut();
+        payload.reply_to_message_id = Some(msg.id);
+        payload.caption = Some(summary.to_string());
+        req.await?;
+    }
+
     Ok(())
 }
 
@@ -460,5 +582,98 @@ pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Resul
         _ => {}
     }
 
+    Ok(())
+}
+
+enum SpamChance {
+    Low,
+    Medium,
+    High,
+    ReallyHigh,
+}
+
+lazy_static! {
+    static ref KEYWORD_LOW: Regex = Regex::new(r"私|主营|色").unwrap();
+    static ref KEYWORD_MID: Regex = Regex::new(r"usdt|微信|支付宝|学生|初中|直播").unwrap();
+    static ref KEYWORD_HIGH: Regex =
+        Regex::new(r"uu|萝莉|小马|小车|付费|粸牌|棋牌|现金|提成|女").unwrap();
+    static ref KEYWORD_RED: Regex =
+        Regex::new(r"口幺力|吆力|呦|幼幼|幼女|幼童|共富|童车|铜车|酮车|俬|㺨").unwrap();
+    static ref EMOJI: Regex = Regex::new(r"[\p{Emoji}]").unwrap();
+}
+
+impl SpamChance {
+    fn check(info: &str) -> Self {
+        let mut score = 0;
+
+        if KEYWORD_LOW.find(info).is_some() {
+            score += 1;
+        }
+
+        if KEYWORD_MID.find(info).is_some() {
+            score += 2;
+        }
+
+        if KEYWORD_HIGH.find(info).is_some() {
+            score += 4;
+        }
+
+        if KEYWORD_RED.find(info).is_some() {
+            score += 7;
+        }
+
+        let num_emoji = EMOJI.find_iter(info).count();
+
+        score += match num_emoji {
+            5.. => 5,
+            4 => 3,
+            2..=3 => 2,
+            _ => 0,
+        };
+
+        match score {
+            7.. => SpamChance::ReallyHigh,
+            4..=6 => SpamChance::High,
+            2..=3 => SpamChance::Medium,
+            _ => SpamChance::Low,
+        }
+    }
+
+    fn msg(&self) -> String {
+        match &self {
+            SpamChance::Low => "不可疑🟢",
+            SpamChance::Medium => "有点可疑🟡",
+            SpamChance::High => "可疑🔴",
+            SpamChance::ReallyHigh => {
+                "🚨🚨🚨🚨🚓🚓👮🚨👮👮🚔👮🚨🚔🚓🚓👮🚔🚨🚨🚔🚔🚓🚓🚨🚓🚔🚔🚨🚨🚨🚓👮\n@jkb_uhi"
+            }
+        }
+        .to_string()
+    }
+}
+
+const SPAM_DETECT_VER: &str = "0.1";
+
+pub async fn spam_check(cx: &UpdateWithCx<Bot, Message>, new_members: &[User]) -> Result<()> {
+    for user in new_members {
+        let id = user.id;
+        let nick = user.full_name();
+        let msg = SpamChance::check(&nick).msg();
+
+        let msg = format!(
+            "特征库ver.{}\n用户: <code>{}</code>\n可疑程度: {}",
+            SPAM_DETECT_VER, id, msg
+        );
+
+        let mut request = cx.requester.send_message(cx.update.chat_id(), msg);
+        let payload = request.payload_mut();
+        payload.parse_mode = Some(teloxide::types::ParseMode::Html);
+        let msg_to_del = request.await?;
+
+        sleep(Duration::from_secs(60)).await;
+        cx.requester
+            .delete_message(msg_to_del.chat_id(), msg_to_del.id)
+            .await?;
+    }
     Ok(())
 }
