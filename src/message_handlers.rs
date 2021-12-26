@@ -201,7 +201,8 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
     let db_path = download_file(bot, doc).await?;
     let pool = SqlitePool::connect(&format!("sqlite:{}", db_path.to_string_lossy())).await?;
     let rows = sqlx::query(
-    r#"SELECT "115://"|| FILENAME || '|' || FILESIZE|| '|' || SHA1, PREID, PATHSTR FROM "myfiles" WHERE SHA1!=0 AND PREID!=0;
+    r#"
+    SELECT "115://"|| FILENAME || '|' || FILESIZE|| '|' || SHA1, PREID, PATHSTR FROM "myfiles" WHERE SHA1!=0 AND PREID!=0 AND PREID!='error'AND SHA1!='error';
 "#).fetch_all(&pool).await?;
 
     let mut content: String = String::new();
@@ -259,7 +260,8 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
     }
 
     let summary = sqlx::query(
-    r#"SELECT SUM(FILESIZE), MAX(FILESIZE), MIN(FILESIZE), COUNT(FILESIZE) FROM "myfiles" WHERE SHA1!=0 AND PREID!=0 ORDER BY "SNO";
+    r#"
+    SELECT SUM(FILESIZE), MAX(FILESIZE), MIN(FILESIZE), COUNT(FILESIZE) FROM "myfiles" WHERE SHA1!=0 AND PREID!=0 AND PREID!='error'AND SHA1!='error' ORDER BY "SNO";
 "#).fetch_one(&pool).await?;
 
     let total_size = summary.try_get::<i64, usize>(0)?.try_into()?;
@@ -268,14 +270,40 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
     let total_files = summary.try_get::<i64, usize>(3)?.try_into()?;
     let mid = sqlx::query(
         r#"
-SELECT AVG(FILESIZE)
-FROM (SELECT FILESIZE
-      FROM "myfiles"
-      WHERE SHA1!=0 AND PREID!=0
-      ORDER BY FILESIZE
-      LIMIT 2 - (SELECT COUNT(*) FROM "myfiles" WHERE SHA1!=0 AND PREID!=0) % 2    -- odd 1, even 2
-      OFFSET (SELECT (COUNT(*) - 1) / 2
-              FROM "myfiles" WHERE SHA1!=0 AND PREID!=0 ))
+SELECT
+	AVG(FILESIZE)
+FROM (
+	SELECT
+		FILESIZE
+	FROM
+		"myfiles"
+	WHERE
+		SHA1 != 0
+		AND PREID != 0
+		AND PREID != 'error'
+		AND SHA1 != 'error'
+	ORDER BY
+		FILESIZE
+	LIMIT 2 - (
+		SELECT
+			COUNT(*)
+		FROM
+			"myfiles"
+		WHERE
+			SHA1 != 0
+			AND PREID != 0
+			AND PREID != 'error'
+			AND SHA1 != 'error') % 2 -- odd 1, even 2
+		OFFSET (
+			SELECT
+				(COUNT(*) - 1) / 2
+			FROM
+				"myfiles"
+			WHERE
+				SHA1 != 0
+				AND PREID != 0
+				AND PREID != 'error'
+				AND SHA1 != 'error'))
               "#,
     )
     .fetch_one(&pool)
