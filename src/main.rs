@@ -4,7 +4,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use rs115_bot::commands::Command;
 use rs115_bot::message_handlers::{
-    command_check, db_handler, download_file, json_handler, line_handler, spam_check,
+    command_check, db_handler, download_file, json_handler, line_handler,
 };
 use rs115_bot::parsers::*;
 use rs115_bot::{callbacks::*, global::*};

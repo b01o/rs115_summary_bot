@@ -83,7 +83,7 @@ pub async fn is_valid_line(input: &Path) -> Result<()> {
         "failed to read line from file: {}",
         input.to_string_lossy()
     ))? {
-        if line.len() > 3000 || line.starts_with('{') || line.starts_with('[') {
+        if line.len() > 1000 || line.starts_with('{') {
             return Err(WrongSha1LinkFormat.into());
         }
 
@@ -261,10 +261,68 @@ pub fn dedup_filerepr_vec(mut list: Vec<FileRepr>) -> Vec<FileRepr> {
     list
 }
 
+pub async fn decrypt_line_file(input: &Path, output: &Path) -> Result<()> {
+    check_input_output(input, output).await?;
+
+    let file = open_without_bom(input).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut content = String::new();
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("fail to read line, maybe not utf8?")?
+    {
+        if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
+        // line.splitn(n, pat)
+        let part: Vec<&str> = line.splitn(8, '|').collect();
+        if part.len() != 8 {
+            bail!("wrong 115sha1 format during decryption");
+        }
+
+        let filename = part[0];
+        let size = part[1];
+        let sha1 = part[2];
+        let encrypted_preid = part[3];
+        let path_str = part[6];
+
+        if encrypted_preid == "0" || encrypted_preid == "error" {
+            // export err type
+            continue;
+        }
+        let preid = if encrypted_preid.chars().all(|c| c.is_ascii_hexdigit())
+            && encrypted_preid.len() == 40
+        {
+            encrypted_preid.to_owned()
+        } else {
+            preid_decrypt(encrypted_preid)?
+        };
+        let path_str = format_path_str(path_str)?;
+        let filename = if filename.starts_with("115://") {
+            filename.to_owned()
+        } else {
+            format!("115://{}", filename)
+        };
+        content.push_str(&format!(
+            "{}|{}|{}|{}|{}\n",
+            filename, size, sha1, &preid, &path_str
+        ));
+    }
+
+    if !content.is_empty() {
+        write_all_to_file(output, content.as_bytes()).await?;
+    }
+
+    Ok(())
+}
+
 pub fn line_summary_mem(content: &str) -> Result<Summary> {
     let mut all_size: Vec<u64> = Vec::new();
     let mut num_lines: u64 = 0;
     let mut has_folder = true;
+    let mut encrypted = false;
 
     for line in content.lines() {
         if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
@@ -278,7 +336,11 @@ pub fn line_summary_mem(content: &str) -> Result<Summary> {
             .ok_or_else(|| anyhow!("wrong format"))?
             .parse()?;
         all_size.push(size);
-        if parts.nth(2).is_none() {
+        let preid = parts.nth(1).ok_or_else(|| anyhow!("wrong format"))?;
+        if !(preid.chars().all(|c| c.is_ascii_hexdigit()) && preid.len() == 40) {
+            encrypted = true;
+        }
+        if parts.next().is_none() {
             has_folder = false;
         }
     }
@@ -306,6 +368,7 @@ pub fn line_summary_mem(content: &str) -> Result<Summary> {
         mid,
         total_files: num_lines,
         has_folder,
+        encrypted,
     })
 }
 
@@ -315,6 +378,8 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
     let mut all_size: Vec<u64> = Vec::new();
     let mut num_lines: u64 = 0;
     let mut has_folder = true;
+
+    let mut encrypted = false;
 
     let file = open_without_bom(path).await?;
     let reader = tokio::io::BufReader::new(file);
@@ -335,7 +400,12 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
             .ok_or_else(|| anyhow!("wrong format"))?
             .parse()?;
         all_size.push(size);
-        if parts.nth(2).is_none() {
+        let preid = parts.nth(1).ok_or_else(|| anyhow!("wrong format"))?;
+        if !(preid.chars().all(|c| c.is_ascii_hexdigit()) && preid.len() == 40) {
+            encrypted = true;
+        }
+
+        if parts.next().is_none() {
             has_folder = false;
         }
     }
@@ -363,6 +433,7 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
         mid,
         total_files: num_lines,
         has_folder,
+        encrypted,
     })
 }
 
@@ -381,6 +452,7 @@ pub struct Summary {
     pub mid: f64,
     pub total_files: u64,
     pub has_folder: bool,
+    pub encrypted: bool,
 }
 
 pub fn to_iec(num: impl Into<u128>) -> String {
@@ -549,6 +621,7 @@ impl std::error::Error for WrongSha1LinkFormat {}
 
 use serde::de::Error;
 
+use crate::decryption::{format_path_str, preid_decrypt};
 use crate::global::ROOT_FOLDER;
 use crate::io::{check_input, check_input_output, has_bom, open_without_bom};
 impl<'de> Deserialize<'de> for FileRepr {

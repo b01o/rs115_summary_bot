@@ -1,9 +1,9 @@
 use crate::{
-    decryption::preid_decrypt,
+    decryption::{format_path_str, preid_decrypt},
     global::{Bot, DEBUG_CC_ID, ROOT_FOLDER},
     parsers::{
         all_ed2k_from_file, all_magnet_from_file, all_magnet_from_text, check_dup_n_err,
-        file_encoding, file_to_utf8, is_valid_line, json_summary, line_summary,
+        decrypt_line_file, file_encoding, file_to_utf8, is_valid_line, json_summary, line_summary,
         path_to_sha1_entity, write_all_to_file, Sha1Entity, Summary,
     },
 };
@@ -77,6 +77,22 @@ pub async fn copied(bot: &Bot, msg: &Message) -> Result<Message> {
 }
 
 pub async fn download_file(bot: &Bot, doc: &Document) -> Result<PathBuf> {
+    let mut count = 0;
+    loop {
+        count += 1;
+        if count > 3 {
+            bail!("fail to download_file")
+        }
+        if let Ok(path) = download_file_proxy(bot, doc).await {
+            return Ok(path);
+        } else {
+            //... retry after
+            tokio::time::sleep(tokio::time::Duration::from_secs(5 * count)).await;
+        }
+    }
+}
+
+async fn download_file_proxy(bot: &Bot, doc: &Document) -> Result<PathBuf> {
     let Document {
         file_name, file_id, ..
     } = doc;
@@ -88,7 +104,7 @@ pub async fn download_file(bot: &Bot, doc: &Document) -> Result<PathBuf> {
     let path_str = ROOT_FOLDER.to_owned() + file_id + "." + file_name;
     let path = Path::new(&path_str);
     if path.exists() {
-        return Ok(path.to_path_buf());
+        let _ = std::fs::remove_file(path);
     }
     let mut new_file = File::create(path).await?;
     bot.download_file(&file_path, &mut new_file).await?;
@@ -115,9 +131,9 @@ pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
     let _ = copied(bot, msg).await;
 
     let mut send_str = summary.to_string();
-    let mut request = cx.reply_to(&send_str);
+    let mut request; // = cx.reply_to(&send_str);
 
-    if msg.chat.is_private() {
+    if msg.chat.is_private() && !summary.encrypted {
         let (dup_num, invalid_num) = check_dup_n_err(&path).await?;
         if dup_num == 0 {
             send_str = format!("{}\n恭喜，这个文件没有重复文件链接。", &send_str);
@@ -151,6 +167,42 @@ pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
             cached = true;
         }
         request = request.reply_markup(btns);
+    } else {
+        let old_filename = doc
+            .file_name
+            .to_owned()
+            .unwrap_or_else(|| "default_filename.txt".to_string());
+
+        let new_filename = if old_filename.ends_with(".txt") {
+            format!(
+                "{}_已解密_{}.txt",
+                old_filename.strip_suffix(".txt").unwrap(),
+                BASE32_NOPAD.encode(&Utc::now().timestamp().to_ne_bytes())
+            )
+        } else {
+            format!(
+                "{}_已解密_{}.txt",
+                old_filename,
+                BASE32_NOPAD.encode(&Utc::now().timestamp().to_ne_bytes())
+            )
+        };
+
+        let output_path = format!("{}/{}", ROOT_FOLDER, new_filename);
+        let output_path = Path::new(&output_path);
+        defer! {
+            if path.exists(){
+                let _ = remove_file(&path);
+            }
+            if output_path.exists(){
+                let _ = remove_file(output_path);
+            }
+        }
+
+        decrypt_line_file(&path, output_path).await?;
+        send_str = format!("解密完成, {}", send_str);
+        reply_document_to(cx, output_path, msg, Some(send_str)).await?;
+
+        return Ok(());
     }
 
     if !cached {
@@ -215,16 +267,17 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
             .replace("\n", "");
         let preid = preid_decrypt(row.try_get::<&str, usize>(1)?)?;
         let path_str = row.try_get::<&str, usize>(2)?;
-        let path_str = path_str
-            .replace(" ", "_")
-            .replace("\\", "")
-            .replace("\n", "");
+        let path_str = format_path_str(path_str)?;
+        // let path_str = path_str
+        //     .replace(" ", "_")
+        //     .replace("\\", "")
+        //     .replace("\n", "");
 
-        let path_str = PATH_ID_REGEX.replace_all(&path_str, "|");
-        let path_str = path_str
-            .rsplit_once(':')
-            .ok_or_else(|| anyhow!("wrong db format..."))?
-            .0;
+        // let path_str = PATH_ID_REGEX.replace_all(&path_str, "|");
+        // let path_str = path_str
+        //     .rsplit_once(':')
+        //     .ok_or_else(|| anyhow!("wrong db format..."))?
+        //     .0;
 
         content.push_str(&format!("{}|{}|{}\n", head, preid, path_str));
     }
@@ -238,13 +291,13 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
         format!(
             "{}_sha1导出_{}.txt",
             filename.rsplit_once('.').unwrap().0,
-            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+            BASE32_NOPAD.encode(&Utc::now().timestamp().to_ne_bytes())
         )
     } else {
         format!(
             "{}_sha1导出_{}.txt",
             filename,
-            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+            BASE32_NOPAD.encode(&Utc::now().timestamp().to_ne_bytes())
         )
     };
 
@@ -271,39 +324,39 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
     let mid = sqlx::query(
         r#"
 SELECT
-	AVG(FILESIZE)
+        AVG(FILESIZE)
 FROM (
-	SELECT
-		FILESIZE
-	FROM
-		"myfiles"
-	WHERE
-		SHA1 != 0
-		AND PREID != 0
-		AND PREID != 'error'
-		AND SHA1 != 'error'
-	ORDER BY
-		FILESIZE
-	LIMIT 2 - (
-		SELECT
-			COUNT(*)
-		FROM
-			"myfiles"
-		WHERE
-			SHA1 != 0
-			AND PREID != 0
-			AND PREID != 'error'
-			AND SHA1 != 'error') % 2 -- odd 1, even 2
-		OFFSET (
-			SELECT
-				(COUNT(*) - 1) / 2
-			FROM
-				"myfiles"
-			WHERE
-				SHA1 != 0
-				AND PREID != 0
-				AND PREID != 'error'
-				AND SHA1 != 'error'))
+        SELECT
+                FILESIZE
+        FROM
+                "myfiles"
+        WHERE
+                SHA1 != 0
+                AND PREID != 0
+                AND PREID != 'error'
+                AND SHA1 != 'error'
+        ORDER BY
+                FILESIZE
+        LIMIT 2 - (
+                SELECT
+                        COUNT(*)
+                FROM
+                        "myfiles"
+                WHERE
+                        SHA1 != 0
+                        AND PREID != 0
+                        AND PREID != 'error'
+                        AND SHA1 != 'error') % 2 -- odd 1, even 2
+                OFFSET (
+                        SELECT
+                                (COUNT(*) - 1) / 2
+                        FROM
+                                "myfiles"
+                        WHERE
+                                SHA1 != 0
+                                AND PREID != 0
+                                AND PREID != 'error'
+                                AND SHA1 != 'error'))
               "#,
     )
     .fetch_one(&pool)
@@ -317,6 +370,7 @@ FROM (
         mid,
         total_files,
         has_folder: true,
+        encrypted: false,
     };
 
     if !content.is_empty() {
@@ -336,15 +390,15 @@ FROM (
 async fn reply_document_to(
     cx: &UpdateWithCx<Bot, Message>,
     output_path: &Path,
-    replied_msg: &Message,
+    reply_to: &Message,
+    caption: Option<String>,
 ) -> Result<()> {
     let input_file = InputFile::File(output_path.to_path_buf());
-    let mut req = cx
-        .requester
-        .send_document(replied_msg.chat_id(), input_file);
+    let mut req = cx.requester.send_document(reply_to.chat_id(), input_file);
 
     let payload = req.payload_mut();
-    payload.reply_to_message_id = Some(replied_msg.id);
+    payload.reply_to_message_id = Some(reply_to.id);
+    payload.caption = caption;
     req.await?;
     Ok(())
 }
@@ -364,13 +418,13 @@ async fn f_ed2k(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Resul
         format!(
             "ed2k_{}_{}.txt",
             filename.rsplit_once('.').unwrap().0,
-            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+            BASE32_NOPAD.encode(&Utc::now().timestamp().to_ne_bytes())
         )
     } else {
         format!(
             "ed2k_{}_{}.txt",
             filename,
-            BASE32_NOPAD.encode(&Utc::now().timestamp_millis().to_ne_bytes())
+            BASE32_NOPAD.encode(&Utc::now().timestamp().to_ne_bytes())
         )
     };
 
@@ -386,7 +440,7 @@ async fn f_ed2k(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Resul
     }
 
     all_ed2k_from_file(&target_file_path, output_path).await?;
-    reply_document_to(cx, output_path, replied_msg).await?;
+    reply_document_to(cx, output_path, replied_msg, None).await?;
     Ok(())
 }
 
@@ -427,7 +481,7 @@ async fn f_magnet(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Res
     }
 
     all_magnet_from_file(&target_file_path, output_path).await?;
-    reply_document_to(cx, output_path, replied_msg).await?;
+    reply_document_to(cx, output_path, replied_msg, None).await?;
     Ok(())
 }
 
@@ -498,7 +552,7 @@ async fn w_magnet(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Res
         write_all_to_file(output_path, res.as_bytes()).await?;
     }
 
-    reply_document_to(cx, output_path, replied_msg).await?;
+    reply_document_to(cx, output_path, replied_msg, None).await?;
     Ok(())
 }
 
@@ -571,7 +625,7 @@ async fn f_utf8(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Resul
     let res = file_to_utf8(&target_file_path, output_path).await?;
 
     if res.is_empty() {
-        reply_document_to(cx, output_path, replied_msg).await?;
+        reply_document_to(cx, output_path, replied_msg, None).await?;
     } else {
         let msg_to_del = cx.reply_to(res).await?;
         sleep(Duration::from_secs(30)).await;
