@@ -131,43 +131,9 @@ pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
     let _ = copied(bot, msg).await;
 
     let mut send_str = summary.to_string();
-    let mut request; // = cx.reply_to(&send_str);
+    let mut request = cx.reply_to(&send_str);
 
-    if msg.chat.is_private() && !summary.encrypted {
-        let (dup_num, invalid_num) = check_dup_n_err(&path).await?;
-        if dup_num == 0 {
-            send_str = format!("{}\n恭喜，这个文件没有重复文件链接。", &send_str);
-        } else {
-            send_str = format!("{}\n! 检测到重复文件 {} 个。", &send_str, dup_num);
-        }
-
-        if invalid_num != 0 {
-            send_str = format!(
-                "{}\n! 包含 {} 个格式不正确的错误链接",
-                &send_str, invalid_num
-            );
-        }
-
-        request = cx.reply_to(&send_str);
-
-        let mut btns = InlineKeyboardMarkup::default();
-        let len = doc.file_id.len();
-        let last_part: String = doc.file_id.chars().skip(len - 62).collect();
-
-        if summary.has_folder {
-            cached = true;
-            let btn1 = btn("转成JSON", "2j", &last_part);
-            let btn2 = btn("去掉目录信息", "ls", &last_part);
-            btns = btns.append_row(vec![btn1, btn2]);
-        }
-
-        let btn3 = btn("去除重复/无效文件", "ld", &last_part);
-        if dup_num != 0 {
-            btns = btns.append_row(vec![btn3]);
-            cached = true;
-        }
-        request = request.reply_markup(btns);
-    } else {
+    if summary.encrypted {
         let old_filename = doc
             .file_name
             .to_owned()
@@ -203,6 +169,42 @@ pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
         reply_document_to(cx, output_path, msg, Some(send_str)).await?;
 
         return Ok(());
+    }
+
+    if msg.chat.is_private() {
+        let (dup_num, invalid_num) = check_dup_n_err(&path).await?;
+        if dup_num == 0 {
+            send_str = format!("{}\n恭喜，这个文件没有重复文件链接。", &send_str);
+        } else {
+            send_str = format!("{}\n! 检测到重复文件 {} 个。", &send_str, dup_num);
+        }
+
+        if invalid_num != 0 {
+            send_str = format!(
+                "{}\n! 包含 {} 个格式不正确的错误链接",
+                &send_str, invalid_num
+            );
+        }
+
+        request = cx.reply_to(&send_str);
+
+        let mut btns = InlineKeyboardMarkup::default();
+        let len = doc.file_id.len();
+        let last_part: String = doc.file_id.chars().skip(len - 62).collect();
+
+        if summary.has_folder {
+            cached = true;
+            let btn1 = btn("转成JSON", "2j", &last_part);
+            let btn2 = btn("去掉目录信息", "ls", &last_part);
+            btns = btns.append_row(vec![btn1, btn2]);
+        }
+
+        let btn3 = btn("去除重复/无效文件", "ld", &last_part);
+        if dup_num != 0 {
+            btns = btns.append_row(vec![btn3]);
+            cached = true;
+        }
+        request = request.reply_markup(btns);
     }
 
     if !cached {
@@ -251,6 +253,7 @@ pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Resu
         update: msg,
     } = &cx;
     let db_path = download_file(bot, doc).await?;
+
     let pool = SqlitePool::connect(&format!("sqlite:{}", db_path.to_string_lossy())).await?;
     let rows = sqlx::query(
     r#"
@@ -384,6 +387,7 @@ FROM (
         req.await?;
     }
 
+    pool.close().await;
     Ok(())
 }
 

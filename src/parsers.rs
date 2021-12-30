@@ -268,18 +268,21 @@ pub async fn decrypt_line_file(input: &Path, output: &Path) -> Result<()> {
     let reader = tokio::io::BufReader::new(file);
     let mut lines = reader.lines();
     let mut content = String::new();
+
+    let mut i: i64 = 0;
     while let Some(line) = lines
         .next_line()
         .await
         .context("fail to read line, maybe not utf8?")?
     {
+        i += 1;
         if line.is_empty() || line.chars().all(|c| c.is_ascii_whitespace()) {
             continue;
         }
         // line.splitn(n, pat)
         let part: Vec<&str> = line.splitn(8, '|').collect();
         if part.len() != 8 {
-            bail!("wrong 115sha1 format during decryption");
+            bail!("wrong 115sha1 format during decryption {}", i);
         }
 
         let filename = part[0];
