@@ -27,10 +27,14 @@ use teloxide::{
     requests::HasPayload,
     types::{
         Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message,
-        MessageEntityKind, User,
+        MessageEntityKind,
     },
 };
 use tokio::{fs::File, time::sleep};
+use crate::commands::Command;
+use crate::global::{HELP, VERSION};
+use crate::parsers::{base32_hex, get_torrent_magnet_async, get_torrent_summary_async, magnet_info, to_iec};
+use teloxide::utils::command::BotCommand;
 
 fn btn(
     name: impl Into<String>,
@@ -41,7 +45,7 @@ fn btn(
 }
 
 // save file for debugging
-pub async fn copied(bot: &Bot, msg: &Message) -> Result<Message> {
+pub(crate) async fn copied(bot: &Bot, msg: &Message) -> Result<Message> {
     unsafe {
         if DEBUG_CC_ID == -1 || DEBUG_CC_ID == msg.chat_id() {
             return Err(anyhow!("ignore"));
@@ -76,7 +80,7 @@ pub async fn copied(bot: &Bot, msg: &Message) -> Result<Message> {
     Ok(req.await?)
 }
 
-pub async fn download_file(bot: &Bot, doc: &Document) -> Result<PathBuf> {
+pub(crate) async fn download_file(bot: &Bot, doc: &Document) -> Result<PathBuf> {
     let mut count = 0;
     loop {
         count += 1;
@@ -112,7 +116,7 @@ async fn download_file_proxy(bot: &Bot, doc: &Document) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
+pub(crate) async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
@@ -215,7 +219,7 @@ pub async fn line_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Re
     Ok(())
 }
 
-pub async fn json_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
+pub(crate) async fn json_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
@@ -247,7 +251,7 @@ lazy_static! {
     static ref PATH_ID_REGEX: Regex = Regex::new(r":\d*?/").unwrap();
 }
 
-pub async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
+pub(crate) async fn db_handler(cx: &UpdateWithCx<Bot, Message>, doc: &Document) -> Result<()> {
     let UpdateWithCx {
         requester: bot,
         update: msg,
@@ -640,7 +644,7 @@ async fn f_utf8(cx: &UpdateWithCx<Bot, Message>, replied_msg: &Message) -> Resul
     Ok(())
 }
 
-pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
+pub(crate) async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
     if !text.starts_with('\'') || cx.update.chat.is_private() {
         // ignore
         return Ok(());
@@ -671,95 +675,169 @@ pub async fn command_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Resul
     Ok(())
 }
 
-enum SpamChance {
-    Low,
-    Medium,
-    High,
-    ReallyHigh,
-}
-
-lazy_static! {
-    static ref KEYWORD_LOW: Regex = Regex::new(r"私|主营|色").unwrap();
-    static ref KEYWORD_MID: Regex = Regex::new(r"usdt|微信|支付宝|学生|初中|直播").unwrap();
-    static ref KEYWORD_HIGH: Regex =
-        Regex::new(r"uu|萝莉|小马|小车|付费|粸牌|棋牌|现金|提成|女").unwrap();
-    static ref KEYWORD_RED: Regex =
-        Regex::new(r"口幺力|吆力|呦|幼幼|幼女|幼童|共富|童车|铜车|酮车|俬|㺨").unwrap();
-    static ref EMOJI: Regex = Regex::new(r"[\p{Emoji}]").unwrap();
-}
-
-impl SpamChance {
-    fn check(info: &str) -> Self {
-        let mut score = 0;
-
-        if KEYWORD_LOW.find(info).is_some() {
-            score += 1;
-        }
-
-        if KEYWORD_MID.find(info).is_some() {
-            score += 2;
-        }
-
-        if KEYWORD_HIGH.find(info).is_some() {
-            score += 4;
-        }
-
-        if KEYWORD_RED.find(info).is_some() {
-            score += 7;
-        }
-
-        let num_emoji = EMOJI.find_iter(info).count();
-
-        score += match num_emoji {
-            5.. => 5,
-            4 => 3,
-            2..=3 => 2,
-            _ => 0,
-        };
-
-        match score {
-            7.. => SpamChance::ReallyHigh,
-            4..=6 => SpamChance::High,
-            2..=3 => SpamChance::Medium,
-            _ => SpamChance::Low,
-        }
+async fn link_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
+    lazy_static! {
+        static ref SHA1RE: Regex =
+            Regex::new(r"115://(.*?)\|(\d*?)(?:\|[a-fA-F0-9]{40}){2}").unwrap();
     }
 
-    fn msg(&self) -> String {
-        match &self {
-            SpamChance::Low => "不可疑🟢",
-            SpamChance::Medium => "有点可疑🟡",
-            SpamChance::High => "可疑🔴",
-            SpamChance::ReallyHigh => {
-                "🚨🚨🚨🚨🚓🚓👮🚨👮👮🚔👮🚨🚔🚓🚓👮🚔🚨🚨🚔🚔🚓🚓🚨🚓🚔🚔🚨🚨🚨🚓👮\n@jkb_uhi"
+    let mut response: String = Default::default();
+    let mut counter = 0;
+    let mut sum: u128 = 0;
+    for cap in SHA1RE.captures_iter(text) {
+        counter += 1;
+        let size: u128 = cap[2].parse()?;
+        sum += size;
+        response.push_str(&format!("{} => {}\n", to_iec(size), &cap[1]));
+    }
+
+    match counter {
+        2.. => response.push_str(&format!("共 {} 个文件, 总计: {}", counter, to_iec(sum))),
+        1 => response = format!("文件大小: {}", to_iec(sum)),
+        _ => {}
+    }
+
+    if !response.is_empty() {
+        cx.reply_to(response).await?;
+    }
+
+    Ok(())
+}
+
+async fn magnet_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
+    lazy_static! {
+        static ref MAGNET_RE: Regex =
+            Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})").unwrap();
+    }
+    let mut reply: String = Default::default();
+    let hash: String;
+    let mut iter = MAGNET_RE.captures_iter(text);
+    if let Some(m) = iter.next() {
+        if m[1].len() == 40 {
+            hash = m[1].to_string();
+        } else if m[1].len() == 32 {
+            hash = base32_hex(&m[1])?;
+        } else {
+            unreachable!();
+        }
+    } else {
+        return Ok(());
+    }
+
+    if iter.next().is_some() {
+        // ignore more than one magnet
+        return Ok(());
+    }
+
+    reply.push_str(&magnet_info(&hash).await?);
+    let mut request = cx.reply_to(reply);
+    let payload = request.payload_mut();
+    payload.parse_mode = Some(teloxide::types::ParseMode::Html);
+    request.await?;
+
+    Ok(())
+}
+
+
+async fn version(cx: &UpdateWithCx<Bot, Message>) -> Result<()> {
+    cx.requester
+        .send_message(cx.update.chat_id(), VERSION)
+        .await?;
+    Ok(())
+}
+
+async fn help(cx: &UpdateWithCx<Bot, Message>) -> Result<()> {
+    cx.requester.send_message(cx.update.chat_id(), HELP).await?;
+    Ok(())
+}
+
+pub(crate) async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()> {
+    let UpdateWithCx {
+        requester: bot,
+        update: msg,
+    } = &cx;
+    // log::info!("getting a msg!!");
+
+    // if let teloxide::types::MessageKind::NewChatMembers(member) = &msg.kind {
+    //     let new_members = &member.new_chat_members;
+    //     spam_check(&cx, new_members).await?;
+    // }
+
+    // handle command
+    let text = if let Some(text) = msg.text() {
+        if msg.chat.is_private() {
+            match BotCommand::parse(text, "") {
+                Ok(Command::Help) => help(&cx).await?,
+                Ok(Command::Version) => version(&cx).await?,
+                Err(_) => {}
             }
         }
-        .to_string()
+        Some(text)
+    } else {
+        msg.caption()
+    };
+
+    if let Some(text) = text {
+        link_check(&cx, text).await?;
+        magnet_check(&cx, text).await?;
+        command_check(&cx, text).await?;
+        // spam_check_dummy(&cx, text).await?;
     }
-}
 
-const SPAM_DETECT_VER: &str = "0.1";
+    if let Some(doc) = msg.document() {
+        if let Some(size) = &doc.file_size {
+            if *size > 1024 * 1024 * 20 {
+                //ignore
+                return Ok(());
+            }
+        }
 
-pub async fn spam_check(cx: &UpdateWithCx<Bot, Message>, new_members: &[User]) -> Result<()> {
-    for user in new_members {
-        let id = user.id;
-        let nick = user.full_name();
-        let msg = SpamChance::check(&nick).msg();
+        if let Some(doc_type) = &doc.mime_type {
+            if doc
+                .file_name
+                .as_ref()
+                .unwrap_or(&"".to_string())
+                .to_lowercase()
+                .ends_with(".db")
+            {
+                log::info!("getting a db");
+                db_handler(&cx, doc).await?;
+            } else if *doc_type == mime::TEXT_PLAIN
+                || doc
+                .file_name
+                .as_ref()
+                .unwrap_or(&"".to_string())
+                .to_lowercase()
+                .ends_with(".txt")
+            {
+                log::info!("getting a txt");
+                line_handler(&cx, doc).await?;
+            } else if *doc_type == mime::APPLICATION_JSON
+                || doc
+                .file_name
+                .as_ref()
+                .unwrap_or(&"".to_string())
+                .to_lowercase()
+                .ends_with(".json")
+            {
+                log::info!("getting a json");
+                json_handler(&cx, doc).await?;
+            } else if *doc_type == "application/x-bittorrent" {
+                log::info!("getting a torrent");
+                let path = download_file(bot, doc).await?;
+                defer! { let _ = std::fs::remove_file(&path); }
 
-        let msg = format!(
-            "特征库ver.{}\n用户: <code>{}</code>\n可疑程度: {}",
-            SPAM_DETECT_VER, id, msg
-        );
-
-        let mut request = cx.requester.send_message(cx.update.chat_id(), msg);
-        let payload = request.payload_mut();
-        payload.parse_mode = Some(teloxide::types::ParseMode::Html);
-        let msg_to_del = request.await?;
-
-        sleep(Duration::from_secs(60)).await;
-        cx.requester
-            .delete_message(msg_to_del.chat_id(), msg_to_del.id)
-            .await?;
+                let reply = format!(
+                    "<code>{}</code>\n---\n总计: {}",
+                    get_torrent_magnet_async(&path).await?,
+                    get_torrent_summary_async(&path).await?
+                );
+                let mut request = cx.reply_to(reply);
+                let payload = request.payload_mut();
+                payload.parse_mode = Some(teloxide::types::ParseMode::Html);
+                request.await?;
+            }
+        }
     }
     Ok(())
 }

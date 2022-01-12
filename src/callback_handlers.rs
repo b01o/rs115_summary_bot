@@ -10,6 +10,9 @@ use teloxide::{
     requests::HasPayload,
     types::{InputFile, Message},
 };
+
+
+use teloxide::prelude::{CallbackQuery, UpdateWithCx};
 use tokio::fs::read_dir;
 
 struct CacheFile {
@@ -43,7 +46,7 @@ async fn find_cache(id_suffix: &str) -> Result<Option<CacheFile>> {
     Ok(None)
 }
 
-pub async fn callback_to_dedup(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
+pub(crate) async fn callback_to_dedup(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -79,7 +82,7 @@ pub async fn callback_to_dedup(bot: &Bot, msg: &Message, id_suffix: &str) -> Res
     Ok(found_cache)
 }
 
-pub async fn callback_to_line(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
+pub(crate) async fn callback_to_line(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -114,7 +117,7 @@ pub async fn callback_to_line(bot: &Bot, msg: &Message, id_suffix: &str) -> Resu
     Ok(found_cache)
 }
 
-pub async fn callback_to_json(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
+pub(crate) async fn callback_to_json(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -149,7 +152,7 @@ pub async fn callback_to_json(bot: &Bot, msg: &Message, id_suffix: &str) -> Resu
     Ok(found_cache)
 }
 
-pub async fn callback_line_strip_dir(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
+pub(crate) async fn callback_line_strip_dir(bot: &Bot, msg: &Message, id_suffix: &str) -> Result<bool> {
     let mut found_cache = false;
     if let Some(cache) = find_cache(id_suffix).await? {
         found_cache = true;
@@ -183,4 +186,45 @@ pub async fn callback_line_strip_dir(bot: &Bot, msg: &Message, id_suffix: &str) 
         req.await?;
     }
     Ok(found_cache)
+}
+
+pub(crate) async fn callback_handler(cx: UpdateWithCx<Bot, CallbackQuery>) -> Result<()> {
+    let UpdateWithCx {
+        requester: bot,
+        update: query,
+    } = &cx;
+
+    if let (Some(version), Some(msg)) = (&query.data, &query.message) {
+        let working = "请稍等...";
+        let to_send = format!("{}\n{}", msg.text().unwrap_or(""), working);
+        bot.edit_message_text(msg.chat.id, msg.id, &to_send).await?;
+
+        let found_cache = match &version[..2] {
+            "2j" => callback_to_json(bot, msg, &version[2..]).await?,
+            "2l" => callback_to_line(bot, msg, &version[2..]).await?,
+            "ls" => callback_line_strip_dir(bot, msg, &version[2..]).await?,
+            "ld" => callback_to_dedup(bot, msg, &version[2..]).await?,
+            _ => {
+                bot.answer_callback_query(&query.id).await?;
+                let text = msg.text().unwrap_or("").to_owned() + "\n发生了错误..";
+                bot.edit_message_text(msg.chat.id, msg.id, text).await?;
+                return Ok(());
+            }
+        };
+
+        bot.answer_callback_query(&query.id).await?;
+        // query.inline_message_id
+
+        if !found_cache {
+            let mut req = bot.send_message(msg.chat_id(), "文件已过期，请重新发送");
+            let payload = req.payload_mut();
+            payload.reply_to_message_id = Some(msg.id);
+            req.await?;
+        }
+
+        let text = msg.text().unwrap_or("");
+        bot.edit_message_text(msg.chat.id, msg.id, text).await?;
+    }
+
+    Ok(())
 }

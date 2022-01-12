@@ -14,5 +14,11 @@ Thumbs.db
 .Spotlight-V100
 .Trashes
 
-
+/.idea
 /.cache
+/scripts
+*.db
+*.db-shm
+*.db-wal
+*.dylib
+*.session

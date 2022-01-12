@@ -5,7 +5,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, BufReader},
 };
 
-pub fn has_bom(path: &Path) -> Result<bool> {
+pub(crate) fn has_bom(path: &Path) -> Result<bool> {
     let file =
         std::fs::File::open(path).context(format!("failed to open {}", path.to_string_lossy()))?;
     let reader = std::io::BufReader::new(file);
@@ -16,7 +16,7 @@ pub fn has_bom(path: &Path) -> Result<bool> {
     Ok(num_reads < 3 || buffer == [0xef, 0xbb, 0xbf])
 }
 
-pub async fn has_bom_async(path: &Path) -> Result<bool> {
+pub(crate) async fn has_bom_async(path: &Path) -> Result<bool> {
     let file = TokioFile::open(path)
         .await
         .context(format!("failed to open {}", path.to_string_lossy()))?;
@@ -30,7 +30,7 @@ pub async fn has_bom_async(path: &Path) -> Result<bool> {
     Ok(num_reads < 3 || buffer == [0xef, 0xbb, 0xbf])
 }
 
-pub async fn open_without_bom(input: &Path) -> Result<TokioFile> {
+pub(crate) async fn open_without_bom(input: &Path) -> Result<TokioFile> {
     let mut file = TokioFile::open(input)
         .await
         .context(format!("failed to open {}", input.to_string_lossy()))?;
@@ -40,14 +40,14 @@ pub async fn open_without_bom(input: &Path) -> Result<TokioFile> {
     Ok(file)
 }
 
-pub async fn check_input(input: &Path) -> Result<()> {
+pub(crate) async fn check_input(input: &Path) -> Result<()> {
     if !input.exists() {
         bail!("input not found");
     }
     Ok(())
 }
 
-pub async fn check_input_output(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn check_input_output(input: &Path, output: &Path) -> Result<()> {
     check_input(input).await?;
     if output.exists() {
         bail!("output path taken");

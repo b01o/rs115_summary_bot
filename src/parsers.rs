@@ -19,7 +19,7 @@ use std::str::FromStr;
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
-pub async fn json2line(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn json2line(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let mut file = open_without_bom(input).await?;
@@ -33,13 +33,13 @@ pub async fn json2line(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn json2line_mem(entity: &Sha1Entity) -> Result<String> {
+pub(crate) fn json2line_mem(entity: &Sha1Entity) -> Result<String> {
     let mut res = String::new();
     write_line_mem(&mut res, entity, "".to_owned());
     Ok(res)
 }
 
-pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let file = open_without_bom(input).await?;
@@ -72,7 +72,7 @@ pub async fn line_strip_dir_info(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn is_valid_line(input: &Path) -> Result<()> {
+pub(crate) async fn is_valid_line(input: &Path) -> Result<()> {
     check_input(input).await?;
 
     let file = open_without_bom(input).await?;
@@ -96,7 +96,7 @@ pub async fn is_valid_line(input: &Path) -> Result<()> {
     Err(WrongSha1LinkFormat.into())
 }
 
-pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn line2json(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let mut root_list: Vec<Sha1Entity> = Vec::new();
@@ -150,7 +150,7 @@ pub async fn line2json(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn path_to_sha1_entity(input: &Path) -> Result<Sha1Entity> {
+pub(crate) async fn path_to_sha1_entity(input: &Path) -> Result<Sha1Entity> {
     check_input(input).await?;
 
     let mut json_file = open_without_bom(input).await?;
@@ -164,7 +164,7 @@ pub async fn path_to_sha1_entity(input: &Path) -> Result<Sha1Entity> {
     Ok(sha1)
 }
 
-pub async fn check_dup_n_err(path: &Path) -> Result<(usize, usize)> {
+pub(crate) async fn check_dup_n_err(path: &Path) -> Result<(usize, usize)> {
     check_input(path).await?;
     let file = open_without_bom(path).await?;
     let reader = BufReader::new(file);
@@ -208,7 +208,7 @@ pub async fn check_dup_n_err(path: &Path) -> Result<(usize, usize)> {
     Ok((origin - after, invalid_lines))
 }
 
-pub async fn dedup_filerepr_file(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn dedup_filerepr_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let file = open_without_bom(input).await?;
@@ -247,7 +247,7 @@ pub async fn dedup_filerepr_file(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn dedup_filerepr_vec(mut list: Vec<FileRepr>) -> Vec<FileRepr> {
+pub(crate) fn dedup_filerepr_vec(mut list: Vec<FileRepr>) -> Vec<FileRepr> {
     let mut set = HashSet::new();
     list.retain(|item| {
         if set.contains(&item.unique_key()) {
@@ -261,7 +261,7 @@ pub fn dedup_filerepr_vec(mut list: Vec<FileRepr>) -> Vec<FileRepr> {
     list
 }
 
-pub async fn decrypt_line_file(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn decrypt_line_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let file = open_without_bom(input).await?;
@@ -321,7 +321,7 @@ pub async fn decrypt_line_file(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn line_summary_mem(content: &str) -> Result<Summary> {
+pub(crate) fn line_summary_mem(content: &str) -> Result<Summary> {
     let mut all_size: Vec<u64> = Vec::new();
     let mut num_lines: u64 = 0;
     let mut has_folder = true;
@@ -375,7 +375,7 @@ pub fn line_summary_mem(content: &str) -> Result<Summary> {
     })
 }
 
-pub async fn line_summary(path: &Path) -> Result<Summary> {
+pub(crate) async fn line_summary(path: &Path) -> Result<Summary> {
     check_input(path).await?;
 
     let mut all_size: Vec<u64> = Vec::new();
@@ -440,7 +440,7 @@ pub async fn line_summary(path: &Path) -> Result<Summary> {
     })
 }
 
-pub fn json_summary(entity: &Sha1Entity) -> Result<Summary> {
+pub(crate) fn json_summary(entity: &Sha1Entity) -> Result<Summary> {
     let lines = json2line_mem(entity)?;
     let mut res = line_summary_mem(&lines)?;
     res.has_folder = true;
@@ -448,17 +448,17 @@ pub fn json_summary(entity: &Sha1Entity) -> Result<Summary> {
 }
 
 #[derive(Debug)]
-pub struct Summary {
-    pub total_size: u64,
-    pub max: u64,
-    pub min: u64,
-    pub mid: f64,
-    pub total_files: u64,
-    pub has_folder: bool,
-    pub encrypted: bool,
+pub(crate) struct Summary {
+    pub(crate) total_size: u64,
+    pub(crate) max: u64,
+    pub(crate) min: u64,
+    pub(crate) mid: f64,
+    pub(crate) total_files: u64,
+    pub(crate) has_folder: bool,
+    pub(crate) encrypted: bool,
 }
 
-pub fn to_iec(num: impl Into<u128>) -> String {
+pub(crate) fn to_iec(num: impl Into<u128>) -> String {
     let mut res = iec(num.into());
     if res.ends_with('i') {
         res.pop();
@@ -484,7 +484,7 @@ impl std::fmt::Display for Summary {
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Sha1Entity {
+pub(crate) struct Sha1Entity {
     #[serde(deserialize_with = "from_dirty_string")]
     dir_name: String,
     files: Vec<FileRepr>,
@@ -503,7 +503,7 @@ where
 }
 
 impl Sha1Entity {
-    pub fn new(dir_name: String) -> Self {
+    pub(crate) fn new(dir_name: String) -> Self {
         Self {
             dir_name,
             files: Vec::new(),
@@ -531,7 +531,7 @@ impl FromStr for Sha1Entity {
 
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct FileRepr {
+pub(crate) struct FileRepr {
     // #[serde(deserialize_with = "from_dirty_string")]
     name: String,
     size: u64,
@@ -612,7 +612,7 @@ impl Serialize for FileRepr {
 }
 
 #[derive(Debug)]
-pub struct WrongSha1LinkFormat;
+pub(crate) struct WrongSha1LinkFormat;
 
 impl std::fmt::Display for WrongSha1LinkFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -741,7 +741,7 @@ struct File {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Info {
+pub(crate) struct Info {
     name: String,
     pieces: ByteBuf,
     #[serde(rename = "piece length")]
@@ -763,8 +763,8 @@ pub struct Info {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Torrent {
-    pub info: Info,
+pub(crate) struct Torrent {
+    pub(crate) info: Info,
     #[serde(default, skip)]
     announce: Option<String>,
     #[serde(default, skip)]
@@ -808,7 +808,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
+pub(crate) async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
     check_input(path).await?;
 
     let output = Command::new("transmission-show")
@@ -827,7 +827,7 @@ pub async fn get_torrent_magnet_async(path: &Path) -> Result<String> {
     Ok("magnet:?xt=urn:btih:".to_string() + &xt)
 }
 
-pub async fn get_torrent_name_async(path: &Path) -> Result<String> {
+pub(crate) async fn get_torrent_name_async(path: &Path) -> Result<String> {
     check_input(path).await?;
 
     let get_name = Command::new("transmission-show")
@@ -856,7 +856,7 @@ pub async fn get_torrent_name_async(path: &Path) -> Result<String> {
     Ok(name.to_string())
 }
 
-pub async fn get_torrent_summary_async(path: &Path) -> Result<String> {
+pub(crate) async fn get_torrent_summary_async(path: &Path) -> Result<String> {
     check_input(path).await?;
 
     let output = Command::new("aria2c")
@@ -902,12 +902,12 @@ pub async fn get_torrent_summary_async(path: &Path) -> Result<String> {
     bail!("fail to find summary in transmission-show")
 }
 
-pub fn base32_hex(content: &str) -> Result<String> {
+pub(crate) fn base32_hex(content: &str) -> Result<String> {
     let bytes = BASE32_NOPAD.decode(content.as_bytes())?;
     Ok(HEXUPPER.encode(&bytes))
 }
 
-pub async fn magnet_info(hash_hex: &str) -> Result<String> {
+pub(crate) async fn magnet_info(hash_hex: &str) -> Result<String> {
     let dest = format!("{}/{}.torrent", ROOT_FOLDER, hash_hex.to_ascii_uppercase());
     let dest = Path::new(&dest);
 
@@ -941,7 +941,7 @@ lazy_static! {
         Regex::new(r"magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})").unwrap();
 }
 
-pub async fn all_magnet_from_text(text: &str) -> Option<Vec<String>> {
+pub(crate) async fn all_magnet_from_text(text: &str) -> Option<Vec<String>> {
     let mut iter = MAGNET_RE.captures_iter(text);
     let mut list = Vec::new();
     for capture in iter.by_ref() {
@@ -954,13 +954,13 @@ pub async fn all_magnet_from_text(text: &str) -> Option<Vec<String>> {
     }
 }
 
-pub async fn write_all_to_file(output: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) async fn write_all_to_file(output: &Path, bytes: &[u8]) -> Result<()> {
     let mut outfile = TokioFile::create(output).await?;
     outfile.write_all(bytes).await?;
     Ok(())
 }
 
-pub async fn file_encoding(input: &Path) -> Result<String> {
+pub(crate) async fn file_encoding(input: &Path) -> Result<String> {
     check_input(input).await?;
     let output = Command::new("uchardet")
         .arg(input.as_os_str())
@@ -971,7 +971,7 @@ pub async fn file_encoding(input: &Path) -> Result<String> {
     Ok(res.to_string())
 }
 
-pub async fn file_to_utf8(input: &Path, output: &Path) -> Result<String> {
+pub(crate) async fn file_to_utf8(input: &Path, output: &Path) -> Result<String> {
     check_input_output(input, output).await?;
 
     let out = Command::new("uchardet")
@@ -997,7 +997,7 @@ pub async fn file_to_utf8(input: &Path, output: &Path) -> Result<String> {
     Ok(Default::default())
 }
 
-pub async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn all_magnet_from_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let mut file = open_without_bom(input).await?;
@@ -1024,7 +1024,7 @@ lazy_static! {
     static ref ED2K_RE: Regex =
         Regex::new(r"ed2k://\|file\|[^|]+\|\d+\|[a-fA-F0-9]{32}\|(h=[a-zA-Z2-7]{32}\|)?/").unwrap();
 }
-pub async fn all_ed2k_from_file(input: &Path, output: &Path) -> Result<()> {
+pub(crate) async fn all_ed2k_from_file(input: &Path, output: &Path) -> Result<()> {
     check_input_output(input, output).await?;
 
     let mut file = open_without_bom(input).await?;

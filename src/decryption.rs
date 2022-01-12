@@ -9,14 +9,14 @@ lazy_static! {
     static ref CIPHER: Cipher = Cipher::aes_128_ecb();
     static ref PATH_ID_REGEX: Regex = Regex::new(r":\d*?/").unwrap();
 }
-pub fn preid_decrypt(data: &str) -> Result<String> {
+pub(crate) fn preid_decrypt(data: &str) -> Result<String> {
     let content = base64::decode(data.to_owned() + COMMON_SUFFIX)?;
     let res = decrypt(*CIPHER, KEY, None, &content)?;
     Ok(std::str::from_utf8(&res)?
         .trim_end_matches('\x00')
         .to_string())
 }
-pub fn format_path_str(path_str: &str) -> Result<String> {
+pub(crate) fn format_path_str(path_str: &str) -> Result<String> {
     let path_str = path_str
         .replace(" ", "_")
         .replace("\\", "")
