@@ -27,9 +27,10 @@ pub(crate) struct Record {
     pub(crate) id: u64,
     pub(crate) text: Option<String>,
     pub(crate) filename: Option<String>,
+    pub(crate) kind: u64,
 }
-fn to_record(id: u64, text: Option<String>, filename: Option<String>) -> rusqlite::Result<Record> {
-    Ok(Record { id, text, filename })
+fn to_record(id: u64, text: Option<String>, filename: Option<String>, kind: u64) -> rusqlite::Result<Record> {
+    Ok(Record { id, text, filename, kind})
 }
 
 fn create_table_if_not_exist(conn: &Connection) -> Result<()> {
@@ -124,7 +125,7 @@ impl Librarian {
         page_num: u64,
     ) -> Result<Vec<Record>> {
         let search_sql = r##"
-       select id, message_filename.text as filename, message_text.text as text
+       select id, message_filename.text as filename, message_text.text as text, type
 from archive
          left join message_filename on archive.message_filename_id = message_filename.ROWID
          left join message_text on archive.message_text_id = message_text.ROWID
@@ -148,7 +149,7 @@ where chat_id=? and type=5 and id in
         let mut stmt = self.conn.prepare(search_sql)?;
         let rows = stmt.query_map(
             params![chat_id, keyword, keyword, limit, page_num * limit],
-            |row| to_record(row.get(0)?, row.get(2)?, row.get(1)?),
+            |row| to_record(row.get(0)?, row.get(2)?, row.get(1)? ,row.get(3)?),
         )?;
         let list: Vec<_> = rows.flat_map(|x|x.ok())
             .collect();
@@ -165,7 +166,7 @@ where chat_id=? and type=5 and id in
         page_num: u64,
     ) -> Result<Vec<Record>> {
         let search_sql = r##"
-       select id, message_filename.text as filename, message_text.text as text
+       select id, message_filename.text as filename, message_text.text as text, type
 from archive
          left join message_filename on archive.message_filename_id = message_filename.ROWID
          left join message_text on archive.message_text_id = message_text.ROWID
@@ -189,7 +190,7 @@ where chat_id=? and id in
         let mut stmt = self.conn.prepare(search_sql)?;
         let rows = stmt.query_map(
             params![chat_id, keyword, keyword, limit, page_num * limit],
-            |row| to_record(row.get(0)?, row.get(2)?, row.get(1)?),
+            |row| to_record(row.get(0)?, row.get(2)?, row.get(1)?, row.get(3)?),
         )?;
         let list: Vec<_> = rows.flat_map(|x|x.ok())
             .collect();

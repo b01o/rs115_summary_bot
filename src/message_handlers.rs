@@ -8,6 +8,11 @@ use crate::{
     },
 };
 
+use crate::commands::Command;
+use crate::global::{HELP, VERSION};
+use crate::parsers::{
+    base32_hex, get_torrent_magnet_async, get_torrent_summary_async, magnet_info, to_iec,
+};
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use data_encoding::BASE32_NOPAD;
@@ -20,21 +25,18 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use teloxide::utils::command::BotCommand;
 use teloxide::{
     net::Download,
     payloads::SendMessageSetters,
     prelude::{Request, Requester, UpdateWithCx},
     requests::HasPayload,
     types::{
-        Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message,
-        MessageEntityKind,
+        Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, MessageEntityKind,
     },
 };
+use teloxide::types::ParseMode;
 use tokio::{fs::File, time::sleep};
-use crate::commands::Command;
-use crate::global::{HELP, VERSION};
-use crate::parsers::{base32_hex, get_torrent_magnet_async, get_torrent_summary_async, magnet_info, to_iec};
-use teloxide::utils::command::BotCommand;
 
 fn btn(
     name: impl Into<String>,
@@ -688,17 +690,23 @@ async fn link_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()> {
         counter += 1;
         let size: u128 = cap[2].parse()?;
         sum += size;
-        response.push_str(&format!("{} => {}\n", to_iec(size), &cap[1]));
+        response.push_str(&format!("{:>7} => {}\n", to_iec(size), &cap[1]));
     }
 
     match counter {
-        2.. => response.push_str(&format!("共 {} 个文件, 总计: {}", counter, to_iec(sum))),
+        2.. => {
+            response = format!("<code>{}</code>", response);
+            response.push_str(&format!("共 {} 个文件, 总计: {}", counter, to_iec(sum)))
+        },
         1 => response = format!("文件大小: {}", to_iec(sum)),
         _ => {}
     }
 
     if !response.is_empty() {
-        cx.reply_to(response).await?;
+        let mut req = cx.reply_to(response);
+        let payload = req.payload_mut();
+        payload.parse_mode = Some(ParseMode::Html);
+        req.await?;
     }
 
     Ok(())
@@ -737,7 +745,6 @@ async fn magnet_check(cx: &UpdateWithCx<Bot, Message>, text: &str) -> Result<()>
 
     Ok(())
 }
-
 
 async fn version(cx: &UpdateWithCx<Bot, Message>) -> Result<()> {
     cx.requester
@@ -804,21 +811,21 @@ pub(crate) async fn message_handler(cx: UpdateWithCx<Bot, Message>) -> Result<()
                 db_handler(&cx, doc).await?;
             } else if *doc_type == mime::TEXT_PLAIN
                 || doc
-                .file_name
-                .as_ref()
-                .unwrap_or(&"".to_string())
-                .to_lowercase()
-                .ends_with(".txt")
+                    .file_name
+                    .as_ref()
+                    .unwrap_or(&"".to_string())
+                    .to_lowercase()
+                    .ends_with(".txt")
             {
                 log::info!("getting a txt");
                 line_handler(&cx, doc).await?;
             } else if *doc_type == mime::APPLICATION_JSON
                 || doc
-                .file_name
-                .as_ref()
-                .unwrap_or(&"".to_string())
-                .to_lowercase()
-                .ends_with(".json")
+                    .file_name
+                    .as_ref()
+                    .unwrap_or(&"".to_string())
+                    .to_lowercase()
+                    .ends_with(".json")
             {
                 log::info!("getting a json");
                 json_handler(&cx, doc).await?;

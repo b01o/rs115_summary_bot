@@ -1,12 +1,12 @@
-# cargo-features = ["strip"]
+cargo-features = ["strip"]
 
 [package]
 name = "rs115_bot"
-version = "2.4.6"
+version = "2.5.0"
 edition = "2021"
 
 [profile.release]
-# strip = true  # Automatically strip symbols from the binary.
+strip = true  # Automatically strip symbols from the binary.
 lto = true
 codegen-units = 1
 
